@@ -607,16 +607,20 @@ export function App(): ReactElement {
                   <p className="mt-2 text-xs text-slate-500">
                     {selectedModelOption?.helper ?? 'Type any compatible model name if it is not in the list.'}
                   </p>
-                  {showCustomModelInput ? (
-                    <input
-                      id="model-input"
-                      className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 text-sm text-slate-50 outline-none focus:border-orange-300/60"
-                      value={settings.model}
-                      onChange={(event) => updateSettings({ model: event.target.value })}
-                      placeholder="Enter a custom model name"
-                      disabled={runInFlight}
-                    />
-                  ) : null}
+                  <label className="mt-3 block text-xs font-semibold uppercase tracking-[0.2em] text-slate-500" htmlFor="model-input">
+                    Model ID
+                  </label>
+                  <input
+                    id="model-input"
+                    className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 text-sm text-slate-50 outline-none focus:border-orange-300/60"
+                    value={settings.model}
+                    onChange={(event) => {
+                      setShowCustomModelInput(true);
+                      updateSettings({ model: event.target.value });
+                    }}
+                    placeholder="Enter or edit a model name"
+                    disabled={runInFlight}
+                  />
                   {validationAttempted && formErrors.model ? (
                     <p className="mt-2 text-xs text-rose-300">{formErrors.model}</p>
                   ) : null}
