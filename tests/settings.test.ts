@@ -110,6 +110,9 @@ describe('Ollama helpers', () => {
     const suggested = getSuggestedModelOptions();
     expect(suggested.some((option) => option.value === 'llama3.2:3b')).toBe(true);
     expect(suggested.some((option) => option.value === 'qwen2.5:3b')).toBe(true);
+    expect(suggested.some((option) => option.value === 'qwen2.5:7b')).toBe(true);
+    expect(suggested.some((option) => option.value === 'gemma3:1b')).toBe(true);
+    expect(suggested.some((option) => option.value === 'gemma3:4b')).toBe(true);
   });
 });
 

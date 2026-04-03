@@ -14,6 +14,8 @@ const INTERACTIVE_SELECTOR = [
   '[role="radio"]',
   '[role="tab"]',
   '[role="textbox"]',
+  '[role="searchbox"]',
+  '[role="combobox"]',
   '[contenteditable="true"]',
   '[onclick]',
 ].join(',');

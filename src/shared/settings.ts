@@ -37,6 +37,11 @@ export const SUGGESTED_OLLAMA_MODELS: ProviderModelOption[] = [
     helper: 'A strong lightweight free model after running ollama pull qwen2.5:3b.',
   },
   {
+    value: 'gemma3:1b',
+    label: 'Gemma 3 1B',
+    helper: 'Smallest recommended free local model for lower-memory laptops.',
+  },
+  {
     value: 'gemma3:4b',
     label: 'Gemma 3 4B',
     helper: 'A good higher-quality free local option after installation.',

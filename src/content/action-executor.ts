@@ -30,7 +30,59 @@ function ensureActionableElement(element: HTMLElement): void {
   }
 }
 
-function setNativeValue(element: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+type ValueWritableElement = HTMLElement & {
+  value: string;
+  select?: () => void;
+};
+
+function hasWritableValue(element: HTMLElement): element is ValueWritableElement {
+  return 'value' in element && typeof (element as { value?: unknown }).value === 'string';
+}
+
+function supportsContentEditable(element: HTMLElement): boolean {
+  return element.isContentEditable || element.getAttribute('contenteditable') === 'true';
+}
+
+function resolveTypingTarget(element: HTMLElement): HTMLElement {
+  if (
+    element instanceof HTMLInputElement
+    || element instanceof HTMLTextAreaElement
+    || supportsContentEditable(element)
+    || hasWritableValue(element)
+  ) {
+    return element;
+  }
+
+  const nestedTarget = element.querySelector(
+    'input:not([type="hidden"]), textarea, [contenteditable="true"], [role="textbox"], [role="searchbox"], [role="combobox"]',
+  );
+  if (nestedTarget instanceof HTMLElement) {
+    return nestedTarget;
+  }
+
+  return element;
+}
+
+function dispatchKeyboardSequence(element: HTMLElement, char: string): void {
+  element.dispatchEvent(new KeyboardEvent('keydown', { key: char, bubbles: true }));
+  element.dispatchEvent(new KeyboardEvent('keypress', { key: char, bubbles: true }));
+  element.dispatchEvent(new InputEvent('beforeinput', {
+    bubbles: true,
+    data: char,
+    inputType: 'insertText',
+  }));
+}
+
+function finishKeyboardSequence(element: HTMLElement, char: string): void {
+  element.dispatchEvent(new InputEvent('input', {
+    bubbles: true,
+    data: char,
+    inputType: 'insertText',
+  }));
+  element.dispatchEvent(new KeyboardEvent('keyup', { key: char, bubbles: true }));
+}
+
+function setNativeValue(element: ValueWritableElement, value: string): void {
   const prototype = Object.getPrototypeOf(element) as {
     value?: string;
   };
@@ -60,32 +112,30 @@ function executeClick(action: ClickAction, snapshot: SnapshotCache): void {
 }
 
 function executeType(action: TypeAction, snapshot: SnapshotCache): void {
-  const element = getElementByRef(action.ref, snapshot);
+  const referencedElement = getElementByRef(action.ref, snapshot);
+  const element = resolveTypingTarget(referencedElement);
   ensureActionableElement(element);
-  if (isSensitiveElement(element)) {
+  if (isSensitiveElement(referencedElement) || isSensitiveElement(element)) {
     throw new Error('Sensitive elements require human approval.');
   }
   element.scrollIntoView({ block: 'center', inline: 'center' });
 
-  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || hasWritableValue(element)) {
     element.focus();
     if (typeof element.select === 'function') {
       element.select();
     }
     setNativeValue(element, '');
     for (const char of action.text) {
+      dispatchKeyboardSequence(element, char);
       setNativeValue(element, `${element.value}${char}`);
-      element.dispatchEvent(new InputEvent('input', {
-        bubbles: true,
-        data: char,
-        inputType: 'insertText',
-      }));
+      finishKeyboardSequence(element, char);
     }
     element.dispatchEvent(new Event('change', { bubbles: true }));
     return;
   }
 
-  if (element.isContentEditable) {
+  if (supportsContentEditable(element)) {
     element.focus();
     element.textContent = action.text;
     element.dispatchEvent(new InputEvent('input', {

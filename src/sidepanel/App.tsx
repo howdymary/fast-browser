@@ -113,6 +113,17 @@ function installedModelStatusLabel(
   return `${installedModels.length} local model${installedModels.length === 1 ? '' : 's'} detected`;
 }
 
+function dedupeModelOptions(options: ProviderModelOption[]): ProviderModelOption[] {
+  const seen = new Set<string>();
+  return options.filter((option) => {
+    if (seen.has(option.value)) {
+      return false;
+    }
+    seen.add(option.value);
+    return true;
+  });
+}
+
 function formatSuggestedInstallCommand(model: string): string {
   return `ollama pull ${model}`;
 }
@@ -271,9 +282,19 @@ export function App(): ReactElement {
   const runInFlight = currentRunId !== null;
   const modelOptions = useMemo(() => installedModels, [installedModels]);
   const suggestedModels = useMemo(() => getSuggestedModelOptions(), []);
+  const suggestedModelsToInstall = useMemo(
+    () => dedupeModelOptions(
+      suggestedModels.filter((option) => !modelOptions.some((installed) => installed.value === option.value)),
+    ),
+    [modelOptions, suggestedModels],
+  );
+  const allModelOptions = useMemo(
+    () => dedupeModelOptions([...modelOptions, ...suggestedModels]),
+    [modelOptions, suggestedModels],
+  );
   const selectedModelOption = useMemo(
-    () => modelOptions.find((option) => option.value === settings.model) ?? null,
-    [modelOptions, settings.model],
+    () => allModelOptions.find((option) => option.value === settings.model) ?? null,
+    [allModelOptions, settings.model],
   );
   const suggestedModelNames = useMemo(
     () => suggestedModels.map((option) => option.value).join(', '),
@@ -517,8 +538,12 @@ export function App(): ReactElement {
   }
 
   function handleModelSelection(value: string): void {
-    setModelNotice(null);
     updateSettings({ model: value });
+    if (modelOptions.some((option) => option.value === value)) {
+      setModelNotice(null);
+      return;
+    }
+    setModelNotice(`"${value}" is not installed locally yet. Run "${formatSuggestedInstallCommand(value)}" and click Refresh models.`);
   }
 
   async function handleSaveSetup(): Promise<void> {
@@ -627,7 +652,7 @@ export function App(): ReactElement {
                 <div>
                   <div className="flex items-center justify-between gap-3">
                     <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="model-select">
-                      Installed models
+                      Models
                     </label>
                     <button
                       type="button"
@@ -638,19 +663,32 @@ export function App(): ReactElement {
                       {installedModelsLoading ? 'Refreshing…' : 'Refresh models'}
                     </button>
                   </div>
-                  {modelOptions.length > 0 ? (
+                  {allModelOptions.length > 0 ? (
                     <select
                       id="model-select"
                       className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 text-sm text-slate-50 outline-none focus:border-orange-300/60"
-                      value={currentModelInstalled ? settings.model : (preferredInstalledModel ?? modelOptions[0]?.value)}
+                      value={selectedModelOption ? selectedModelOption.value : (currentModelInstalled ? settings.model : (preferredInstalledModel ?? allModelOptions[0]?.value))}
                       onChange={(event) => handleModelSelection(event.target.value)}
                       disabled={runInFlight}
                     >
-                      {modelOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
+                      {modelOptions.length > 0 ? (
+                        <optgroup label="Installed locally">
+                          {modelOptions.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ) : null}
+                      {suggestedModelsToInstall.length > 0 ? (
+                        <optgroup label="Free models to install">
+                          {suggestedModelsToInstall.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ) : null}
                     </select>
                   ) : (
                     <div className="mt-2 rounded-2xl border border-dashed border-white/10 bg-slate-950/60 px-3 py-3 text-sm text-slate-400">
@@ -658,7 +696,7 @@ export function App(): ReactElement {
                     </div>
                   )}
                   <p className="mt-2 text-xs text-slate-500">
-                    {selectedModelOption?.helper ?? 'Type a local model ID below if you want to use a model that is not in the detected list yet.'}
+                    {selectedModelOption?.helper ?? 'Choose an installed model or a free model to install, or type any local model ID below.'}
                   </p>
                   <p className="mt-2 text-xs text-slate-500">
                     {installedModelStatusLabel(modelOptions, installedModelsLoading)}

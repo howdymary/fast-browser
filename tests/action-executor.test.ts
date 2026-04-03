@@ -14,6 +14,7 @@ function installDomGlobals(dom: JSDOM): void {
     Event: dom.window.Event,
     InputEvent: dom.window.InputEvent,
     MouseEvent: dom.window.MouseEvent,
+    KeyboardEvent: dom.window.KeyboardEvent,
   });
 
   if (!dom.window.HTMLElement.prototype.scrollIntoView) {
@@ -162,6 +163,31 @@ describe('executeAction', () => {
     );
 
     expect(editor.textContent).toBe('draft note');
+  });
+
+  it('types into a nested input when the referenced element is a combobox wrapper', async () => {
+    const dom = new JSDOM(`
+      <!doctype html>
+      <html>
+        <body>
+          <div id="combo" role="combobox">
+            <input id="combo-input" value="" />
+          </div>
+        </body>
+      </html>
+    `);
+    installDomGlobals(dom);
+
+    const wrapper = dom.window.document.getElementById('combo') as HTMLElement;
+    const input = dom.window.document.getElementById('combo-input') as HTMLInputElement;
+
+    await executeAction(
+      { action: 'type', ref: '@e1', text: 'weather', reason: 'Fill search' },
+      'snapshot-1',
+      makeSnapshot('snapshot-1', [['@e1', wrapper]]),
+    );
+
+    expect(input.value).toBe('weather');
   });
 
   it('rejects clicks on disabled targets', async () => {
