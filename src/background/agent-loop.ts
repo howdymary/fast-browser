@@ -37,6 +37,8 @@ Rules:
 4. If the page is missing the controls you need, navigate explicitly.
 5. If you are uncertain or the page looks risky, use ask_human.
 6. Keep reasons under 12 words.
+7. Do not return {"actions":[...]}, arrays, plans, or wrapper objects.
+8. If you think multiple steps are needed, return only the immediate next action object.
 `.trim();
 
 export interface AgentLoopDependencies {
@@ -184,7 +186,41 @@ function extractJsonCandidate(raw: string): string {
   return candidate.trim();
 }
 
-function parseAgentAction(raw: string): AgentAction {
+function unwrapActionPayload(parsedValue: unknown): { value: unknown; warning?: string } {
+  if (Array.isArray(parsedValue) && parsedValue.length > 0) {
+    return {
+      value: parsedValue[0],
+      warning: 'Model returned an action array. Fast Browser used the first step only.',
+    };
+  }
+
+  if (!parsedValue || typeof parsedValue !== 'object') {
+    return { value: parsedValue };
+  }
+
+  const record = parsedValue as Record<string, unknown>;
+  if (typeof record.action === 'string') {
+    return { value: record };
+  }
+
+  if (Array.isArray(record.actions) && record.actions.length > 0) {
+    return {
+      value: record.actions[0],
+      warning: 'Model returned a multi-step plan. Fast Browser used only the first action.',
+    };
+  }
+
+  if (record.next_action && typeof record.next_action === 'object') {
+    return {
+      value: record.next_action,
+      warning: 'Model returned a wrapped next_action. Fast Browser unwrapped it.',
+    };
+  }
+
+  return { value: parsedValue };
+}
+
+function parseAgentAction(raw: string): { action: AgentAction; warning?: string } {
   let parsedValue: unknown;
   const candidate = extractJsonCandidate(raw);
 
@@ -195,7 +231,8 @@ function parseAgentAction(raw: string): AgentAction {
     throw new Error(`Invalid JSON from model: ${message}. Raw response: ${raw.slice(0, 200)}`);
   }
 
-  const parsed = parsedValue as Partial<AgentAction>;
+  const unwrapped = unwrapActionPayload(parsedValue);
+  const parsed = unwrapped.value as Partial<AgentAction>;
   if (!parsed || typeof parsed !== 'object' || typeof parsed.action !== 'string') {
     throw new Error(`The model did not return a valid action: ${raw.slice(0, 120)}`);
   }
@@ -203,37 +240,37 @@ function parseAgentAction(raw: string): AgentAction {
   switch (parsed.action) {
     case 'click':
       if (typeof parsed.ref === 'string') {
-        return { action: 'click', ref: parsed.ref, reason: parsed.reason ?? 'Click target' };
+        return { action: { action: 'click', ref: parsed.ref, reason: parsed.reason ?? 'Click target' }, warning: unwrapped.warning };
       }
       break;
     case 'type':
       if (typeof parsed.ref === 'string' && typeof parsed.text === 'string') {
-        return { action: 'type', ref: parsed.ref, text: parsed.text, reason: parsed.reason ?? 'Type text' };
+        return { action: { action: 'type', ref: parsed.ref, text: parsed.text, reason: parsed.reason ?? 'Type text' }, warning: unwrapped.warning };
       }
       break;
     case 'scroll':
       if (parsed.direction === 'up' || parsed.direction === 'down') {
-        return { action: 'scroll', direction: parsed.direction, reason: parsed.reason ?? 'Scroll page' };
+        return { action: { action: 'scroll', direction: parsed.direction, reason: parsed.reason ?? 'Scroll page' }, warning: unwrapped.warning };
       }
       break;
     case 'navigate':
       if (typeof parsed.url === 'string') {
-        return { action: 'navigate', url: parsed.url, reason: parsed.reason ?? 'Navigate' };
+        return { action: { action: 'navigate', url: parsed.url, reason: parsed.reason ?? 'Navigate' }, warning: unwrapped.warning };
       }
       break;
     case 'wait':
       if (typeof parsed.ms === 'number') {
-        return { action: 'wait', ms: parsed.ms, reason: parsed.reason ?? 'Wait briefly' };
+        return { action: { action: 'wait', ms: parsed.ms, reason: parsed.reason ?? 'Wait briefly' }, warning: unwrapped.warning };
       }
       break;
     case 'ask_human':
       if (typeof parsed.question === 'string') {
-        return { action: 'ask_human', question: parsed.question, reason: parsed.reason ?? 'Need confirmation' };
+        return { action: { action: 'ask_human', question: parsed.question, reason: parsed.reason ?? 'Need confirmation' }, warning: unwrapped.warning };
       }
       break;
     case 'done':
       if (typeof parsed.result === 'string') {
-        return { action: 'done', result: parsed.result, reason: parsed.reason ?? 'Task complete' };
+        return { action: { action: 'done', result: parsed.result, reason: parsed.reason ?? 'Task complete' }, warning: unwrapped.warning };
       }
       break;
     default:
@@ -478,7 +515,18 @@ export async function runAgentLoop(
 
       let action: AgentAction;
       try {
-        action = parseAgentAction(rawAction);
+        const parsedAction = parseAgentAction(rawAction);
+        action = parsedAction.action;
+        if (parsedAction.warning) {
+          const warningEntry = makeFeedEntry(parsedAction.warning, 'warning');
+          feed.push(warningEntry);
+          await emitEvent(deps, {
+            step,
+            phase: 'plan',
+            entry: warningEntry,
+            pageState: currentPage,
+          });
+        }
       } catch (parseError) {
         const message = parseError instanceof Error ? parseError.message : 'Failed to parse model response.';
         const errorEntry = makeFeedEntry(message, 'error');

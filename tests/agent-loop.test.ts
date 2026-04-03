@@ -253,6 +253,65 @@ describe('runAgentLoop', () => {
     expect(result.error).toMatch(/unsupported|malformed/i);
   });
 
+  it('unwraps a multi-step actions wrapper and uses the first action only', async () => {
+    const firstPage = makePageState();
+    const secondPage = makePageState({
+      snapshotId: 'snapshot-2',
+      visibleText: 'Search opened',
+    });
+    const warnings: string[] = [];
+
+    const result = await runAgentLoop(
+      {
+        task: 'Open search',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi
+          .fn<() => Promise<PageState>>()
+          .mockResolvedValueOnce(firstPage)
+          .mockResolvedValueOnce(secondPage)
+          .mockResolvedValueOnce(secondPage),
+        executeAction: vi.fn().mockResolvedValue(undefined),
+        navigate: vi.fn().mockResolvedValue(undefined),
+        callModel: vi
+          .fn()
+          .mockResolvedValueOnce('{"actions":[{"action":"click","ref":"@e1","reason":"Open search"},{"action":"type","ref":"@e2","text":"weather","reason":"Fill search"}]}')
+          .mockResolvedValueOnce('{"action":"done","result":"Search opened","reason":"Task complete"}'),
+        emitEvent: async (event) => {
+          if (event.entry?.kind === 'warning') {
+            warnings.push(event.entry.message);
+          }
+        },
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(warnings.some((message) => /multi-step plan/i.test(message))).toBe(true);
+  });
+
+  it('unwraps a next_action wrapper from the model response', async () => {
+    const page = makePageState();
+
+    const result = await runAgentLoop(
+      {
+        task: 'Finish the task',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi.fn().mockResolvedValue(page),
+        executeAction: vi.fn(),
+        navigate: vi.fn(),
+        callModel: vi.fn().mockResolvedValue('{"next_action":{"action":"done","result":"Finished","reason":"Task complete"}}'),
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.finalMessage).toMatch(/finished/i);
+  });
+
   it('does not retry non-transient model failures', async () => {
     const page = makePageState({
       elements: [],
