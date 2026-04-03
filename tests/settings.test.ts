@@ -16,7 +16,7 @@ describe('validateProviderSettings', () => {
     const settings: ProviderSettings = {
       provider: 'ollama',
       apiKey: '',
-      model: 'llama3.2',
+      model: 'llama3.2:3b',
       baseUrl: 'http://127.0.0.1:11434/v1/chat/completions',
     };
     expect(validateProviderSettings(settings)).toBeNull();
@@ -62,7 +62,7 @@ describe('validateProviderSettings', () => {
     const settings: ProviderSettings = {
       provider: 'ollama',
       apiKey: '',
-      model: 'llama3.2',
+      model: 'llama3.2:3b',
       baseUrl: '',
     };
     const result = validateProviderSettings(settings);
@@ -128,6 +128,7 @@ describe('provider endpoint helpers', () => {
   it('returns provider-specific model options for the dropdown', () => {
     expect(getProviderModelOptions('openai')[0]?.value).toBe('gpt-4.1-mini');
     expect(getProviderModelOptions('ollama').some((option) => option.value === 'qwen2.5:3b')).toBe(true);
+    expect(getProviderModelOptions('ollama').some((option) => option.value === 'llama3.2:3b')).toBe(true);
   });
 
   it('uses the provider defaults when no base URL is supplied', () => {
@@ -151,7 +152,7 @@ describe('provider endpoint helpers', () => {
       getProviderEndpoint({
         provider: 'ollama',
         apiKey: '',
-        model: 'llama3.2',
+        model: 'llama3.2:3b',
       }),
     ).toBe('http://127.0.0.1:11434/v1/chat/completions');
   });
@@ -160,7 +161,7 @@ describe('provider endpoint helpers', () => {
     expect(providerNeedsApiKey({
       provider: 'ollama',
       apiKey: '',
-      model: 'llama3.2',
+      model: 'llama3.2:3b',
     })).toBe(false);
 
     expect(providerNeedsApiKey({

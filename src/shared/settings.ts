@@ -24,7 +24,7 @@ const PROVIDER_PRESETS: Record<ProviderName, Omit<ProviderSettings, 'apiKey'>> =
   },
   ollama: {
     provider: 'ollama',
-    model: 'llama3.2',
+    model: 'llama3.2:3b',
     baseUrl: 'http://127.0.0.1:11434/v1/chat/completions',
   },
 };
@@ -66,7 +66,7 @@ const PROVIDER_MODEL_OPTIONS: Record<ProviderName, ProviderModelOption[]> = {
       helper: 'Best lightweight local default for no-cost use.',
     },
     {
-      value: 'llama3.2',
+      value: 'llama3.2:3b',
       label: 'Llama 3.2 3B',
       helper: 'Strong local all-arounder for summarization and basic control.',
     },
