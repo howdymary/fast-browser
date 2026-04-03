@@ -20,7 +20,13 @@ const INTERACTIVE_SELECTOR = [
 
 const MAX_VISIBLE_TEXT_CHARS = 1500;
 const MAX_INTERACTIVE_ELEMENTS = 40;
-const FAST_BROWSER_REF_ATTR = 'data-fast-browser-ref';
+export const FAST_BROWSER_REF_ATTR = 'data-fast-browser-ref';
+
+function clearPriorRefs(rootDocument: Document): void {
+  for (const element of Array.from(rootDocument.querySelectorAll(`[${FAST_BROWSER_REF_ATTR}]`))) {
+    element.removeAttribute(FAST_BROWSER_REF_ATTR);
+  }
+}
 
 function isVisible(element: Element): boolean {
   if (!(element instanceof HTMLElement)) {
@@ -194,6 +200,9 @@ function extractVisibleText(root: ParentNode = document): string {
 }
 
 export function extractPageState(rootDocument: Document = document): PageState {
+  clearPriorRefs(rootDocument);
+  const snapshotId = crypto.randomUUID();
+  rootDocument.documentElement.setAttribute('data-fast-browser-snapshot-id', snapshotId);
   const interactiveElements = Array.from(rootDocument.querySelectorAll(INTERACTIVE_SELECTOR))
     .filter((element, index, self) => self.indexOf(element) === index)
     .filter((element) => isVisible(element))
@@ -212,6 +221,7 @@ export function extractPageState(rootDocument: Document = document): PageState {
   const maxScrollable = Math.max(scrollHeight - viewportHeight, 1);
 
   return {
+    snapshotId,
     url: rootDocument.location.href,
     title: rootDocument.title,
     visibleText: extractVisibleText(rootDocument),

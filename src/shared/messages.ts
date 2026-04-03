@@ -1,15 +1,13 @@
-import type { ActionFeedEntry, PageState } from './types';
+import type { AgentRunResult, ExecutableAction, PageState } from './types';
 
 export interface InspectPageRequest {
   type: 'FAST_BROWSER_INSPECT_PAGE';
   task?: string;
 }
 
-export interface InspectPageResponse {
-  ok: boolean;
-  pageState?: PageState;
-  feed?: ActionFeedEntry[];
-  error?: string;
+export interface RunTaskRequest {
+  type: 'FAST_BROWSER_RUN_TASK';
+  task: string;
 }
 
 export interface ContentExtractRequest {
@@ -23,8 +21,18 @@ export interface ContentExtractResponse {
   error?: string;
 }
 
-export type BackgroundMessage = InspectPageRequest;
-export type BackgroundResponse = InspectPageResponse;
-export type ContentMessage = ContentExtractRequest;
-export type ContentResponse = ContentExtractResponse;
+export interface ContentExecuteRequest {
+  type: 'FAST_BROWSER_EXECUTE_ACTION';
+  action: ExecutableAction;
+  snapshotId: string;
+}
 
+export interface ContentExecuteResponse {
+  ok: boolean;
+  error?: string;
+}
+
+export type BackgroundMessage = InspectPageRequest | RunTaskRequest;
+export type BackgroundResponse = AgentRunResult;
+export type ContentMessage = ContentExtractRequest | ContentExecuteRequest;
+export type ContentResponse = ContentExtractResponse | ContentExecuteResponse;

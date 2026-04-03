@@ -1,8 +1,9 @@
-import { useMemo, type ReactElement } from 'react';
+import { useEffect, useMemo, type ReactElement } from 'react';
 
 import type { BackgroundResponse } from '../shared/messages';
 import { ActionFeed } from './components/ActionFeed';
 import { useAgentStore } from './stores/agent-store';
+import { useSettingsStore } from './stores/settings-store';
 
 export function App(): ReactElement {
   const {
@@ -18,6 +19,19 @@ export function App(): ReactElement {
     setError,
     resetFeed,
   } = useAgentStore();
+  const {
+    settings,
+    loaded,
+    updateSettings,
+    load: loadSettings,
+    save: saveSettings,
+  } = useSettingsStore();
+
+  useEffect(() => {
+    if (!loaded) {
+      void loadSettings();
+    }
+  }, [loaded, loadSettings]);
 
   const statusLabel = useMemo(() => {
     switch (status) {
@@ -56,6 +70,41 @@ export function App(): ReactElement {
     setStatus('idle');
   }
 
+  async function handleRunAgent(): Promise<void> {
+    setStatus('thinking');
+    setError(null);
+    resetFeed();
+    setPageState(null);
+
+    await saveSettings();
+
+    const response = await chrome.runtime.sendMessage({
+      type: 'FAST_BROWSER_RUN_TASK',
+      task: task.trim(),
+    }) as BackgroundResponse;
+
+    appendFeed(response.feed ?? []);
+
+    if (!response.ok) {
+      setStatus('error');
+      setError(response.error ?? 'The browser agent failed.');
+      if (response.pageState) {
+        setPageState(response.pageState);
+      }
+      return;
+    }
+
+    if (response.pageState) {
+      setPageState(response.pageState);
+    }
+
+    const hasWarning = (response.feed ?? []).some((entry) => entry.kind === 'warning');
+    setStatus(hasWarning ? 'asking' : 'idle');
+    if (response.finalMessage) {
+      setError(null);
+    }
+  }
+
   return (
     <main className="min-h-screen px-4 py-5 text-slate-50">
       <div className="mx-auto flex max-w-3xl flex-col gap-4">
@@ -63,7 +112,7 @@ export function App(): ReactElement {
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-xs uppercase tracking-[0.25em] text-sky-300">Fast Browser</p>
-              <h1 className="mt-1 text-xl font-semibold">MV3 scaffold + first DOM extractor</h1>
+              <h1 className="mt-1 text-xl font-semibold">First real action loop</h1>
             </div>
             <div className="rounded-full border border-slate-700 bg-slate-900/70 px-3 py-1 text-xs text-slate-300">
               {statusLabel}
@@ -91,6 +140,14 @@ export function App(): ReactElement {
             </button>
             <button
               type="button"
+              className="rounded-full bg-emerald-400 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+              onClick={() => { void handleRunAgent(); }}
+              disabled={!task.trim()}
+            >
+              Run agent
+            </button>
+            <button
+              type="button"
               className="rounded-full border border-slate-700 px-4 py-2 text-sm text-slate-200 transition hover:border-slate-500 hover:bg-slate-900"
               onClick={() => {
                 setPageState(null);
@@ -101,6 +158,64 @@ export function App(): ReactElement {
             >
               Clear
             </button>
+          </div>
+
+          <div className="mt-4 grid gap-3 rounded-2xl border border-slate-800 bg-slate-900/60 p-3 md:grid-cols-2">
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="provider-select">
+                Provider
+              </label>
+              <select
+                id="provider-select"
+                className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50"
+                value={settings.provider}
+                onChange={(event) => updateSettings({ provider: event.target.value as typeof settings.provider })}
+              >
+                <option value="ollama">Ollama</option>
+                <option value="openai">OpenAI-compatible</option>
+                <option value="anthropic">Anthropic</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="model-input">
+                Model
+              </label>
+              <input
+                id="model-input"
+                className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50"
+                value={settings.model}
+                onChange={(event) => updateSettings({ model: event.target.value })}
+                placeholder="llama3.2 or gpt-4.1-mini"
+              />
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="base-url-input">
+                Endpoint
+              </label>
+              <input
+                id="base-url-input"
+                className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50"
+                value={settings.baseUrl ?? ''}
+                onChange={(event) => updateSettings({ baseUrl: event.target.value })}
+                placeholder="http://127.0.0.1:11434/v1/chat/completions"
+              />
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="api-key-input">
+                API key
+              </label>
+              <input
+                id="api-key-input"
+                type="password"
+                className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50"
+                value={settings.apiKey}
+                onChange={(event) => updateSettings({ apiKey: event.target.value })}
+                placeholder={settings.provider === 'ollama' ? 'Optional for local Ollama' : 'Required for this provider'}
+              />
+            </div>
           </div>
 
           {error ? (
@@ -114,7 +229,7 @@ export function App(): ReactElement {
           <div className="rounded-3xl border border-slate-800 bg-slate-950/60 p-4">
             <div className="mb-3 flex items-center justify-between gap-3">
               <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">Action feed</h2>
-              <span className="text-xs text-slate-500">Current focus: extraction only</span>
+              <span className="text-xs text-slate-500">Current focus: inspect + click/type/scroll/wait/navigate</span>
             </div>
             <ActionFeed entries={feed} />
           </div>

@@ -31,6 +31,7 @@ export interface ElementRef {
 }
 
 export interface PageState {
+  snapshotId: string;
   url: string;
   title: string;
   visibleText: string;
@@ -38,9 +39,75 @@ export interface PageState {
   meta: PageMeta;
 }
 
+export interface ClickAction {
+  action: 'click';
+  ref: string;
+  reason: string;
+}
+
+export interface TypeAction {
+  action: 'type';
+  ref: string;
+  text: string;
+  reason: string;
+}
+
+export interface ScrollAction {
+  action: 'scroll';
+  direction: 'up' | 'down';
+  reason: string;
+}
+
+export interface NavigateAction {
+  action: 'navigate';
+  url: string;
+  reason: string;
+}
+
+export interface WaitAction {
+  action: 'wait';
+  ms: number;
+  reason: string;
+}
+
+export interface AskHumanAction {
+  action: 'ask_human';
+  question: string;
+  reason: string;
+}
+
+export interface DoneAction {
+  action: 'done';
+  result: string;
+  reason: string;
+}
+
+export type AgentAction =
+  | ClickAction
+  | TypeAction
+  | ScrollAction
+  | NavigateAction
+  | WaitAction
+  | AskHumanAction
+  | DoneAction;
+
+export type ExecutableAction =
+  | ClickAction
+  | TypeAction
+  | ScrollAction
+  | WaitAction;
+
 export interface ActionFeedEntry {
   id: string;
   kind: 'info' | 'success' | 'warning' | 'error';
   message: string;
   timestamp: string;
+}
+
+export interface AgentRunResult {
+  ok: boolean;
+  pageState?: PageState;
+  feed: ActionFeedEntry[];
+  finalMessage?: string;
+  error?: string;
 }

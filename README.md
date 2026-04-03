@@ -2,36 +2,61 @@
 
 Fast Browser is an open-source Chrome extension for natural-language browser automation.
 
-This repo is intentionally starting small. The current scaffold proves the core extension plumbing:
+This repo is intentionally starting small. The current scaffold now proves the core extension plumbing and the first real agent loop:
 
 - Manifest V3 extension with a side panel
 - background service worker
 - content script
 - DOM-native page extraction
-- React side panel that can inspect the active tab and render a structured page snapshot
+- React side panel for task entry and provider settings
+- first observe → plan → act → verify loop against the active tab
 
 ## Current scope
 
-This is not a full browser agent yet. The first implementation is focused on the most important primitive: a reliable DOM extractor and clean message flow between the side panel, service worker, and content script.
+This is not a full browser agent yet. The current implementation is focused on the first trustworthy slice:
 
-The first working loop is:
+The working loop today is:
 
 1. Open the side panel
-2. Click `Inspect page`
-3. Capture a structured snapshot of the active page
-4. Render the top interactive elements and visible text preview
+2. Configure a provider (`Ollama`, `OpenAI-compatible`, or `Anthropic`)
+3. Enter a task
+4. Run the loop on the active tab
+5. Observe a structured page snapshot
+6. Ask the model for exactly one JSON action
+7. Execute a small safe action set
+8. Re-observe and continue until done, blocked, or out of steps
+
+Supported action types in this slice:
+
+- `click`
+- `type`
+- `scroll`
+- `wait`
+- `navigate`
+- `done`
+- `ask_human`
+
+The content script treats refs as snapshot-local. After every action, the page is re-extracted and old refs expire immediately.
 
 ## Multi-provider support
 
-Yes, multi-provider support can include Ollama.
+Yes, multi-provider support includes Ollama in this first action-loop slice.
 
-The planned provider shape is:
+Current provider shape:
 
 - Anthropic
 - OpenAI-compatible APIs
 - Ollama
 
-The repo already includes a provider settings type and a placeholder LLM client, but live LLM calls are intentionally not wired into this first scaffold yet. The current priority is correctness of extraction and extension architecture.
+The current implementation wires live calls for all three paths. The default local-friendly setup is Ollama using the OpenAI-compatible chat completions endpoint.
+
+What is still intentionally missing:
+
+- streaming run updates over a `Port`
+- richer action types like `select`, `extract`, or multi-action plans
+- robust page-settling logic for highly dynamic apps
+- file upload, iframe, and rich-editor flows
+- production-grade prompt-injection hardening
 
 ## Development
 
