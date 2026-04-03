@@ -3,7 +3,6 @@ import type {
   ActionFeedEntry,
   AgentAction,
   AgentRunResult,
-  AgentStatus,
   ExecutableAction,
   NavigateAction,
   PageState,
@@ -40,21 +39,22 @@ Rules:
 `.trim();
 
 export interface AgentLoopDependencies {
+  signal: AbortSignal;
   getPageState: () => Promise<PageState>;
   executeAction: (action: ExecutableAction, snapshotId: string) => Promise<void>;
   navigate: (action: NavigateAction) => Promise<void>;
-  callModel: (systemPrompt: string, messages: LlmMessage[], settings: ProviderSettings) => Promise<string>;
-  emitUpdate?: (update: {
+  callModel: (
+    systemPrompt: string,
+    messages: LlmMessage[],
+    settings: ProviderSettings,
+    signal?: AbortSignal,
+  ) => Promise<string>;
+  emitEvent?: (event: {
     step: number;
     phase: RunPhase;
-    status: AgentStatus;
-    feed?: ActionFeedEntry[];
+    entry?: ActionFeedEntry;
     pageState?: PageState;
-    finalMessage?: string;
-    error?: string;
-    ok?: boolean;
   }) => Promise<void> | void;
-  isCancelled?: () => boolean;
 }
 
 interface AgentLoopOptions {
@@ -63,7 +63,10 @@ interface AgentLoopOptions {
   maxSteps?: number;
 }
 
-function makeFeedEntry(message: string, kind: ActionFeedEntry['kind'] = 'info'): ActionFeedEntry {
+export function makeFeedEntry(
+  message: string,
+  kind: ActionFeedEntry['kind'] = 'info',
+): ActionFeedEntry {
   return {
     id: crypto.randomUUID(),
     kind,
@@ -72,21 +75,18 @@ function makeFeedEntry(message: string, kind: ActionFeedEntry['kind'] = 'info'):
   };
 }
 
-async function emit(
-  deps: AgentLoopDependencies,
-  update: Parameters<NonNullable<AgentLoopDependencies['emitUpdate']>>[0],
-): Promise<void> {
-  if (deps.emitUpdate) {
-    await deps.emitUpdate(update);
-  }
+function throwIfAborted(signal: AbortSignal): void {
+  signal.throwIfAborted();
 }
 
-function cancelledResult(): AgentRunResult {
-  return {
-    ok: false,
-    feed: [makeFeedEntry('Run cancelled.', 'warning')],
-    error: 'Run cancelled.',
-  };
+async function emitEvent(
+  deps: AgentLoopDependencies,
+  event: Parameters<NonNullable<AgentLoopDependencies['emitEvent']>>[0],
+): Promise<void> {
+  throwIfAborted(deps.signal);
+  if (deps.emitEvent) {
+    await deps.emitEvent(event);
+  }
 }
 
 function formatPageState(pageState: PageState): string {
@@ -132,7 +132,9 @@ function parseAgentAction(raw: string): AgentAction {
 
   switch (parsed.action) {
     case 'click':
-      if (typeof parsed.ref === 'string') return { action: 'click', ref: parsed.ref, reason: parsed.reason ?? 'Click target' };
+      if (typeof parsed.ref === 'string') {
+        return { action: 'click', ref: parsed.ref, reason: parsed.reason ?? 'Click target' };
+      }
       break;
     case 'type':
       if (typeof parsed.ref === 'string' && typeof parsed.text === 'string') {
@@ -201,250 +203,240 @@ function requiresHumanApproval(action: AgentAction, pageState: PageState): strin
   return null;
 }
 
+function cancelledResult(): AgentRunResult {
+  return {
+    ok: false,
+    feed: [makeFeedEntry('Run cancelled.', 'warning')],
+    error: 'Run cancelled.',
+  };
+}
+
 export async function runAgentLoop(
   options: AgentLoopOptions,
   deps: AgentLoopDependencies,
 ): Promise<AgentRunResult> {
-  const maxSteps = options.maxSteps ?? 6;
-  const feed: ActionFeedEntry[] = [];
-  const history: AgentAction[] = [];
-  await emit(deps, {
-    step: 0,
-    phase: 'observe-start',
-    status: 'thinking',
-  });
-  let currentPage = await deps.getPageState();
-  if (deps.isCancelled?.()) {
-    await emit(deps, {
+  try {
+    const maxSteps = options.maxSteps ?? 6;
+    const feed: ActionFeedEntry[] = [];
+    const history: AgentAction[] = [];
+
+    await emitEvent(deps, {
       step: 0,
-      phase: 'cancelled',
-      status: 'error',
-      feed: [makeFeedEntry('Run cancelled.', 'warning')],
-      error: 'Run cancelled.',
-      ok: false,
+      phase: 'observe',
     });
-    return cancelledResult();
-  }
 
-  feed.push(makeFeedEntry(`Observed ${currentPage.meta.elementCount} interactive elements.`, 'success'));
-  await emit(deps, {
-    step: 0,
-    phase: 'observe-done',
-    status: 'thinking',
-    pageState: currentPage,
-    feed: [feed[feed.length - 1]!],
-  });
+    let currentPage = await deps.getPageState();
+    throwIfAborted(deps.signal);
 
-  for (let step = 1; step <= maxSteps; step += 1) {
-    if (deps.isCancelled?.()) {
-      await emit(deps, {
+    const observedEntry = makeFeedEntry(`Observed ${currentPage.meta.elementCount} interactive elements.`, 'success');
+    feed.push(observedEntry);
+    await emitEvent(deps, {
+      step: 0,
+      phase: 'observe',
+      entry: observedEntry,
+      pageState: currentPage,
+    });
+
+    for (let step = 1; step <= maxSteps; step += 1) {
+      throwIfAborted(deps.signal);
+
+      const planningEntry = makeFeedEntry(`Planning step ${step}.`);
+      feed.push(planningEntry);
+      await emitEvent(deps, {
         step,
-        phase: 'cancelled',
-        status: 'error',
-        feed: [makeFeedEntry('Run cancelled.', 'warning')],
-        error: 'Run cancelled.',
-        ok: false,
+        phase: 'plan',
+        entry: planningEntry,
       });
+
+      const rawAction = await deps.callModel(
+        AGENT_SYSTEM_PROMPT,
+        [
+          {
+            role: 'user',
+            content: [
+              `Task: ${options.task}`,
+              `History:\n${formatHistory(history)}`,
+              `Current page:\n${formatPageState(currentPage)}`,
+            ].join('\n\n'),
+          },
+        ],
+        options.settings,
+        deps.signal,
+      );
+      throwIfAborted(deps.signal);
+
+      const action = parseAgentAction(rawAction);
+      history.push(action);
+      const plannedActionEntry = makeFeedEntry(`Model chose ${action.action}: ${action.reason}`);
+      feed.push(plannedActionEntry);
+      await emitEvent(deps, {
+        step,
+        phase: 'plan',
+        entry: plannedActionEntry,
+      });
+
+      const approvalReason = requiresHumanApproval(action, currentPage);
+      if (approvalReason) {
+        const approvalEntry = makeFeedEntry(approvalReason, 'warning');
+        feed.push(approvalEntry);
+        await emitEvent(deps, {
+          step,
+          phase: 'awaiting-human',
+          entry: approvalEntry,
+          pageState: currentPage,
+        });
+        return {
+          ok: true,
+          pageState: currentPage,
+          feed,
+          finalMessage: approvalReason,
+        };
+      }
+
+      if (action.action === 'ask_human') {
+        const askEntry = makeFeedEntry(action.question, 'warning');
+        feed.push(askEntry);
+        await emitEvent(deps, {
+          step,
+          phase: 'awaiting-human',
+          entry: askEntry,
+          pageState: currentPage,
+        });
+        return {
+          ok: true,
+          pageState: currentPage,
+          feed,
+          finalMessage: action.question,
+        };
+      }
+
+      if (action.action === 'done') {
+        const doneEntry = makeFeedEntry(action.result, 'success');
+        feed.push(doneEntry);
+        await emitEvent(deps, {
+          step,
+          phase: 'done',
+          entry: doneEntry,
+          pageState: currentPage,
+        });
+        return {
+          ok: true,
+          pageState: currentPage,
+          feed,
+          finalMessage: action.result,
+        };
+      }
+
+      if (action.action === 'navigate') {
+        const navigateEntry = makeFeedEntry(`Starting navigate: ${action.reason}`);
+        feed.push(navigateEntry);
+        await emitEvent(deps, {
+          step,
+          phase: 'act',
+          entry: navigateEntry,
+        });
+        await deps.navigate(action);
+        throwIfAborted(deps.signal);
+        currentPage = await deps.getPageState();
+        throwIfAborted(deps.signal);
+        const verifyNavigateEntry = makeFeedEntry(`Navigated to ${currentPage.url}.`, 'success');
+        feed.push(verifyNavigateEntry);
+        await emitEvent(deps, {
+          step,
+          phase: 'verify',
+          entry: verifyNavigateEntry,
+          pageState: currentPage,
+        });
+        continue;
+      }
+
+      if (!isExecutableAction(action)) {
+        const errorEntry = makeFeedEntry('Unsupported non-executable action.', 'error');
+        feed.push(errorEntry);
+        await emitEvent(deps, {
+          step,
+          phase: 'error',
+          entry: errorEntry,
+          pageState: currentPage,
+        });
+        return {
+          ok: false,
+          pageState: currentPage,
+          feed,
+          error: 'Unsupported non-executable action.',
+        };
+      }
+
+      try {
+        const actEntry = makeFeedEntry(`Starting ${action.action}: ${action.reason}`);
+        feed.push(actEntry);
+        await emitEvent(deps, {
+          step,
+          phase: 'act',
+          entry: actEntry,
+        });
+        await deps.executeAction(action, currentPage.snapshotId);
+        throwIfAborted(deps.signal);
+
+        const actionDoneEntry = makeFeedEntry(`Executed ${action.action}.`, 'success');
+        feed.push(actionDoneEntry);
+        await emitEvent(deps, {
+          step,
+          phase: 'act',
+          entry: actionDoneEntry,
+        });
+
+        currentPage = await deps.getPageState();
+        throwIfAborted(deps.signal);
+
+        const verifyEntry = makeFeedEntry(`Refreshed the page snapshot after ${action.action}.`, 'success');
+        feed.push(verifyEntry);
+        await emitEvent(deps, {
+          step,
+          phase: 'verify',
+          entry: verifyEntry,
+          pageState: currentPage,
+        });
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          throw error;
+        }
+        const message = error instanceof Error ? error.message : 'Unknown action failure.';
+        const errorEntry = makeFeedEntry(message, 'error');
+        feed.push(errorEntry);
+        await emitEvent(deps, {
+          step,
+          phase: 'error',
+          entry: errorEntry,
+          pageState: currentPage,
+        });
+        return {
+          ok: false,
+          pageState: currentPage,
+          feed,
+          error: message,
+        };
+      }
+    }
+
+    const exhaustedEntry = makeFeedEntry(`Stopped after ${maxSteps} steps without completing the task.`, 'error');
+    feed.push(exhaustedEntry);
+    await emitEvent(deps, {
+      step: maxSteps,
+      phase: 'error',
+      entry: exhaustedEntry,
+      pageState: currentPage,
+    });
+    return {
+      ok: false,
+      pageState: currentPage,
+      feed,
+      error: `Stopped after ${maxSteps} steps without completing the task.`,
+    };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
       return cancelledResult();
     }
-
-    const planningEntry = makeFeedEntry(`Planning step ${step}.`);
-    feed.push(planningEntry);
-    await emit(deps, {
-      step,
-      phase: 'plan-start',
-      status: 'thinking',
-      feed: [planningEntry],
-    });
-    const rawAction = await deps.callModel(
-      AGENT_SYSTEM_PROMPT,
-      [
-        {
-          role: 'user',
-          content: [
-            `Task: ${options.task}`,
-            `History:\n${formatHistory(history)}`,
-            `Current page:\n${formatPageState(currentPage)}`,
-          ].join('\n\n'),
-        },
-      ],
-      options.settings,
-    );
-
-    const action = parseAgentAction(rawAction);
-    history.push(action);
-    const plannedActionEntry = makeFeedEntry(`Model chose ${action.action}: ${action.reason}`);
-    feed.push(plannedActionEntry);
-    await emit(deps, {
-      step,
-      phase: 'plan-ready',
-      status: 'thinking',
-      feed: [plannedActionEntry],
-    });
-
-    const approvalReason = requiresHumanApproval(action, currentPage);
-    if (approvalReason) {
-      const approvalEntry = makeFeedEntry(approvalReason, 'warning');
-      await emit(deps, {
-        step,
-        phase: 'done',
-        status: 'asking',
-        feed: [approvalEntry],
-        pageState: currentPage,
-        finalMessage: approvalReason,
-        ok: true,
-      });
-      return {
-        ok: true,
-        pageState: currentPage,
-        feed: [...feed, approvalEntry],
-        finalMessage: approvalReason,
-      };
-    }
-
-    if (action.action === 'ask_human') {
-      const askEntry = makeFeedEntry(action.question, 'warning');
-      await emit(deps, {
-        step,
-        phase: 'done',
-        status: 'asking',
-        feed: [askEntry],
-        pageState: currentPage,
-        finalMessage: action.question,
-        ok: true,
-      });
-      return {
-        ok: true,
-        pageState: currentPage,
-        feed: [...feed, askEntry],
-        finalMessage: action.question,
-      };
-    }
-
-    if (action.action === 'done') {
-      const doneEntry = makeFeedEntry(action.result, 'success');
-      await emit(deps, {
-        step,
-        phase: 'done',
-        status: 'idle',
-        feed: [doneEntry],
-        pageState: currentPage,
-        finalMessage: action.result,
-        ok: true,
-      });
-      return {
-        ok: true,
-        pageState: currentPage,
-        feed: [...feed, doneEntry],
-        finalMessage: action.result,
-      };
-    }
-
-    if (action.action === 'navigate') {
-      const actStartEntry = makeFeedEntry(`Starting navigate: ${action.reason}`);
-      feed.push(actStartEntry);
-      await emit(deps, {
-        step,
-        phase: 'act-start',
-        status: 'acting',
-        feed: [actStartEntry],
-      });
-      await deps.navigate(action);
-      currentPage = await deps.getPageState();
-      const navigatedEntry = makeFeedEntry(`Navigated to ${currentPage.url}.`, 'success');
-      feed.push(navigatedEntry);
-      await emit(deps, {
-        step,
-        phase: 'verify-done',
-        status: 'verifying',
-        feed: [navigatedEntry],
-        pageState: currentPage,
-      });
-      continue;
-    }
-
-    if (!isExecutableAction(action)) {
-      const errorEntry = makeFeedEntry('Unsupported non-executable action.', 'error');
-      await emit(deps, {
-        step,
-        phase: 'error',
-        status: 'error',
-        feed: [errorEntry],
-        pageState: currentPage,
-        error: 'Unsupported non-executable action.',
-        ok: false,
-      });
-      return {
-        ok: false,
-        pageState: currentPage,
-        feed: [...feed, errorEntry],
-        error: 'Unsupported non-executable action.',
-      };
-    }
-
-    try {
-      const actStartEntry = makeFeedEntry(`Starting ${action.action}: ${action.reason}`);
-      feed.push(actStartEntry);
-      await emit(deps, {
-        step,
-        phase: 'act-start',
-        status: 'acting',
-        feed: [actStartEntry],
-      });
-      await deps.executeAction(action, currentPage.snapshotId);
-      const actDoneEntry = makeFeedEntry(`Executed ${action.action}.`, 'success');
-      feed.push(actDoneEntry);
-      await emit(deps, {
-        step,
-        phase: 'act-result',
-        status: 'acting',
-        feed: [actDoneEntry],
-      });
-      currentPage = await deps.getPageState();
-      const verifyEntry = makeFeedEntry(`Refreshed the page snapshot after ${action.action}.`, 'success');
-      feed.push(verifyEntry);
-      await emit(deps, {
-        step,
-        phase: 'verify-done',
-        status: 'verifying',
-        feed: [verifyEntry],
-        pageState: currentPage,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown action failure.';
-      const errorEntry = makeFeedEntry(message, 'error');
-      feed.push(errorEntry);
-      await emit(deps, {
-        step,
-        phase: 'error',
-        status: 'error',
-        feed: [errorEntry],
-        pageState: currentPage,
-        error: message,
-        ok: false,
-      });
-      return {
-        ok: false,
-        pageState: currentPage,
-        feed,
-        error: message,
-      };
-    }
+    throw error;
   }
-
-  await emit(deps, {
-    step: maxSteps,
-    phase: 'error',
-    status: 'error',
-    feed: [makeFeedEntry(`Stopped after ${maxSteps} steps without completing the task.`, 'error')],
-    pageState: currentPage,
-    error: `Stopped after ${maxSteps} steps without completing the task.`,
-    ok: false,
-  });
-  return {
-    ok: false,
-    pageState: currentPage,
-    feed,
-    error: `Stopped after ${maxSteps} steps without completing the task.`,
-  };
 }

@@ -1,7 +1,6 @@
 import type {
   ActionFeedEntry,
   AgentRunResult,
-  AgentStatus,
   ExecutableAction,
   PageState,
   RunPhase,
@@ -12,14 +11,15 @@ export interface InspectPageRequest {
   task?: string;
 }
 
-export interface RunTaskRequest {
-  type: 'FAST_BROWSER_RUN_TASK';
+export interface RunStartClientMessage {
+  type: 'FAST_BROWSER_RUN_START';
+  runId: string;
   task: string;
 }
 
-export interface RunTaskPortRequest {
-  type: 'FAST_BROWSER_RUN_START';
-  task: string;
+export interface RunCancelClientMessage {
+  type: 'FAST_BROWSER_RUN_CANCEL';
+  runId: string;
 }
 
 export interface ContentExtractRequest {
@@ -44,22 +44,30 @@ export interface ContentExecuteResponse {
   error?: string;
 }
 
-export type BackgroundMessage = InspectPageRequest | RunTaskRequest;
+export type BackgroundMessage = InspectPageRequest;
 export type BackgroundResponse = AgentRunResult;
 export type ContentMessage = ContentExtractRequest | ContentExecuteRequest;
 export type ContentResponse = ContentExtractResponse | ContentExecuteResponse;
 
-export interface RunStreamUpdate {
-  type: 'FAST_BROWSER_RUN_UPDATE';
+export interface RunEventServerMessage {
+  type: 'FAST_BROWSER_RUN_EVENT';
   runId: string;
+  seq: number;
   step: number;
   phase: RunPhase;
-  status: AgentStatus;
-  feed?: ActionFeedEntry[];
+  entry?: ActionFeedEntry;
   pageState?: PageState;
-  finalMessage?: string;
-  error?: string;
-  ok?: boolean;
 }
 
-export type RunPortMessage = RunTaskPortRequest | RunStreamUpdate;
+export interface RunFinishServerMessage {
+  type: 'FAST_BROWSER_RUN_FINISH';
+  runId: string;
+  seq: number;
+  ok: boolean;
+  finalMessage?: string;
+  error?: string;
+  pageState?: PageState;
+}
+
+export type RunPortClientMessage = RunStartClientMessage | RunCancelClientMessage;
+export type RunPortServerMessage = RunEventServerMessage | RunFinishServerMessage;

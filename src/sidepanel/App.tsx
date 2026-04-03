@@ -1,23 +1,49 @@
 import { useEffect, useMemo, useRef, type ReactElement } from 'react';
 
-import type { BackgroundResponse, RunPortMessage, RunStreamUpdate } from '../shared/messages';
+import type {
+  BackgroundResponse,
+  RunEventServerMessage,
+  RunFinishServerMessage,
+  RunPortClientMessage,
+  RunPortServerMessage,
+} from '../shared/messages';
+import type { RunPhase } from '../shared/types';
 import { ActionFeed } from './components/ActionFeed';
 import { useAgentStore } from './stores/agent-store';
 import { useSettingsStore } from './stores/settings-store';
 
+function statusLabelForPhase(phase: RunPhase | null): string {
+  switch (phase) {
+    case 'observe':
+      return 'Reading the current page';
+    case 'plan':
+      return 'Planning the next step';
+    case 'act':
+      return 'Executing an action';
+    case 'verify':
+      return 'Verifying the result';
+    case 'awaiting-human':
+      return 'Waiting for confirmation';
+    case 'error':
+      return 'Needs attention';
+    default:
+      return 'Ready';
+  }
+}
+
 export function App(): ReactElement {
   const {
     task,
-    status,
     phase,
     currentRunId,
+    lastSeq,
     pageState,
     feed,
     error,
     setTask,
-    setStatus,
     setPhase,
     setCurrentRunId,
+    setLastSeq,
     setPageState,
     appendFeed,
     setError,
@@ -30,8 +56,15 @@ export function App(): ReactElement {
     load: loadSettings,
     save: saveSettings,
   } = useSettingsStore();
+
   const runnerPortRef = useRef<chrome.runtime.Port | null>(null);
   const currentRunIdRef = useRef<string | null>(null);
+  const lastSeqRef = useRef(0);
+  const phaseRef = useRef<RunPhase | null>(null);
+
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
 
   useEffect(() => {
     if (!loaded) {
@@ -40,91 +73,86 @@ export function App(): ReactElement {
   }, [loaded, loadSettings]);
 
   useEffect(() => {
-    const port = chrome.runtime.connect({ name: 'fast-browser-runner' });
-    runnerPortRef.current = port;
-
-    function handleRunUpdate(message: RunPortMessage): void {
-      if (message.type !== 'FAST_BROWSER_RUN_UPDATE') {
-        return;
-      }
-
-      const update = message as RunStreamUpdate;
-      if (currentRunIdRef.current && update.runId !== currentRunIdRef.current) {
-        return;
-      }
-
-      if (!currentRunIdRef.current) {
-        currentRunIdRef.current = update.runId;
-        setCurrentRunId(update.runId);
-      }
-
-      setStatus(update.status);
-      setPhase(update.phase);
-      if (update.feed?.length) {
-        appendFeed(update.feed);
-      }
-      if (update.pageState) {
-        setPageState(update.pageState);
-      }
-      if (update.error) {
-        setError(update.error);
-      } else if (update.ok) {
-        setError(null);
-      }
-
-      if (update.phase === 'done' || update.phase === 'error' || update.phase === 'cancelled') {
-        if (update.phase === 'done' && update.status !== 'asking') {
-          setStatus('idle');
-        }
-        currentRunIdRef.current = null;
-        setCurrentRunId(null);
-      }
-    }
-
-    function handleDisconnect(): void {
-      runnerPortRef.current = null;
-      if (currentRunIdRef.current) {
-        setStatus('error');
-        setPhase('error');
-        setError('The live run connection closed unexpectedly.');
-        currentRunIdRef.current = null;
-        setCurrentRunId(null);
-      }
-    }
-
-    port.onMessage.addListener(handleRunUpdate);
-    port.onDisconnect.addListener(handleDisconnect);
-
     return () => {
-      port.onMessage.removeListener(handleRunUpdate);
-      port.onDisconnect.removeListener(handleDisconnect);
-      port.disconnect();
+      if (runnerPortRef.current && currentRunIdRef.current) {
+        const cancelMessage: RunPortClientMessage = {
+          type: 'FAST_BROWSER_RUN_CANCEL',
+          runId: currentRunIdRef.current,
+        };
+        runnerPortRef.current.postMessage(cancelMessage);
+        runnerPortRef.current.disconnect();
+      }
       runnerPortRef.current = null;
+      currentRunIdRef.current = null;
+      lastSeqRef.current = 0;
     };
-  }, [appendFeed, setCurrentRunId, setError, setPageState, setPhase, setStatus]);
+  }, []);
 
-  const statusLabel = useMemo(() => {
-    switch (status) {
-      case 'thinking':
-        return phase === 'observe-start' || phase === 'observe-done' ? 'Reading the current page' : 'Planning the next step';
-      case 'acting':
-        return 'Executing an action';
-      case 'verifying':
-        return 'Verifying the result';
-      case 'asking':
-        return 'Waiting for confirmation';
-      case 'error':
-        return 'Needs attention';
-      default:
-        return 'Ready';
+  const statusLabel = useMemo(() => statusLabelForPhase(phase), [phase]);
+  const runInFlight = currentRunId !== null;
+
+  function cleanupRunnerPort(): void {
+    currentRunIdRef.current = null;
+    lastSeqRef.current = 0;
+    setCurrentRunId(null);
+    setLastSeq(0);
+    const port = runnerPortRef.current;
+    runnerPortRef.current = null;
+    if (port) {
+      port.disconnect();
     }
-  }, [phase, status]);
+  }
 
-  const runInFlight = status === 'thinking' || status === 'acting' || status === 'verifying';
+  function handleRunServerMessage(message: RunPortServerMessage): void {
+    if (!currentRunIdRef.current) {
+      return;
+    }
+
+    if (message.runId !== currentRunIdRef.current || message.seq <= lastSeqRef.current) {
+      return;
+    }
+
+    lastSeqRef.current = message.seq;
+    setLastSeq(message.seq);
+
+    if (message.type === 'FAST_BROWSER_RUN_EVENT') {
+      const event = message as RunEventServerMessage;
+      setPhase(event.phase);
+      if (event.entry) {
+        appendFeed([event.entry]);
+      }
+      if (event.pageState) {
+        setPageState(event.pageState);
+      }
+      return;
+    }
+
+    const finish = message as RunFinishServerMessage;
+    if (finish.pageState) {
+      setPageState(finish.pageState);
+    }
+
+    if (finish.error) {
+      setError(finish.error);
+    } else {
+      setError(null);
+    }
+
+    if (phaseRef.current === 'awaiting-human') {
+      setPhase('awaiting-human');
+    } else if (finish.ok) {
+      setPhase(null);
+    } else if ((finish.error ?? '').match(/cancelled/i)) {
+      setPhase(null);
+    } else {
+      setPhase('error');
+    }
+
+    cleanupRunnerPort();
+  }
 
   async function handleInspectPage(): Promise<void> {
-    setStatus('thinking');
-    setPhase('observe-start');
+    setPhase('observe');
     setError(null);
     resetFeed();
 
@@ -134,7 +162,7 @@ export function App(): ReactElement {
     }) as BackgroundResponse;
 
     if (!response.ok || !response.pageState) {
-      setStatus('error');
+      setPhase('error');
       setError(response.error ?? 'Unknown extension error.');
       appendFeed(response.feed ?? []);
       return;
@@ -142,25 +170,54 @@ export function App(): ReactElement {
 
     setPageState(response.pageState);
     appendFeed(response.feed ?? []);
-    setStatus('idle');
     setPhase(null);
   }
 
   async function handleRunAgent(): Promise<void> {
-    setStatus('thinking');
-    setPhase('observe-start');
+    await saveSettings();
+
+    const runId = crypto.randomUUID();
+    const port = chrome.runtime.connect({ name: 'fast-browser.run' });
+
+    cleanupRunnerPort();
+    runnerPortRef.current = port;
+    currentRunIdRef.current = runId;
+    lastSeqRef.current = 0;
+    setCurrentRunId(runId);
+    setLastSeq(0);
+    setPhase('observe');
     setError(null);
     resetFeed();
     setPageState(null);
-    currentRunIdRef.current = null;
-    setCurrentRunId(null);
 
-    await saveSettings();
+    function handleDisconnect(): void {
+      if (currentRunIdRef.current === runId) {
+        setPhase('error');
+        setError('The live run connection closed unexpectedly.');
+        cleanupRunnerPort();
+      }
+    }
 
-    runnerPortRef.current?.postMessage({
+    port.onMessage.addListener(handleRunServerMessage);
+    port.onDisconnect.addListener(handleDisconnect);
+
+    const startMessage: RunPortClientMessage = {
       type: 'FAST_BROWSER_RUN_START',
+      runId,
       task: task.trim(),
-    });
+    };
+    port.postMessage(startMessage);
+  }
+
+  function handleCancelRun(): void {
+    if (!runnerPortRef.current || !currentRunIdRef.current) {
+      return;
+    }
+    const cancelMessage: RunPortClientMessage = {
+      type: 'FAST_BROWSER_RUN_CANCEL',
+      runId: currentRunIdRef.current,
+    };
+    runnerPortRef.current.postMessage(cancelMessage);
   }
 
   return (
@@ -173,6 +230,9 @@ export function App(): ReactElement {
               <h1 className="mt-1 text-xl font-semibold">First real action loop</h1>
               <p className="mt-1 text-xs text-slate-400">
                 {phase ? `Live phase: ${phase}` : 'Task runner idle'}
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                {currentRunId ? `Run ${currentRunId.slice(0, 8)} · seq ${lastSeq}` : 'No active run'}
               </p>
             </div>
             <div className="rounded-full border border-slate-700 bg-slate-900/70 px-3 py-1 text-xs text-slate-300">
@@ -194,8 +254,9 @@ export function App(): ReactElement {
           <div className="mt-4 flex flex-wrap gap-3">
             <button
               type="button"
-              className="rounded-full bg-sky-500 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-sky-400"
+              className="rounded-full bg-sky-500 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
               onClick={() => { void handleInspectPage(); }}
+              disabled={runInFlight}
             >
               Inspect page
             </button>
@@ -203,21 +264,27 @@ export function App(): ReactElement {
               type="button"
               className="rounded-full bg-emerald-400 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
               onClick={() => { void handleRunAgent(); }}
-              disabled={!task.trim() || currentRunId !== null || runInFlight}
+              disabled={!task.trim() || runInFlight}
             >
               Run agent
             </button>
             <button
               type="button"
-              className="rounded-full border border-slate-700 px-4 py-2 text-sm text-slate-200 transition hover:border-slate-500 hover:bg-slate-900"
+              className="rounded-full border border-amber-600 px-4 py-2 text-sm text-amber-200 transition hover:border-amber-400 hover:bg-amber-950/40 disabled:cursor-not-allowed disabled:border-slate-700 disabled:text-slate-500"
+              onClick={handleCancelRun}
+              disabled={!runInFlight}
+            >
+              Cancel run
+            </button>
+            <button
+              type="button"
+              className="rounded-full border border-slate-700 px-4 py-2 text-sm text-slate-200 transition hover:border-slate-500 hover:bg-slate-900 disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-500"
               onClick={() => {
                 setPageState(null);
                 setError(null);
                 resetFeed();
-                setStatus('idle');
                 setPhase(null);
-                currentRunIdRef.current = null;
-                setCurrentRunId(null);
+                cleanupRunnerPort();
               }}
               disabled={runInFlight}
             >
@@ -235,6 +302,7 @@ export function App(): ReactElement {
                 className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50"
                 value={settings.provider}
                 onChange={(event) => updateSettings({ provider: event.target.value as typeof settings.provider })}
+                disabled={runInFlight}
               >
                 <option value="ollama">Ollama</option>
                 <option value="openai">OpenAI-compatible</option>
@@ -252,6 +320,7 @@ export function App(): ReactElement {
                 value={settings.model}
                 onChange={(event) => updateSettings({ model: event.target.value })}
                 placeholder="llama3.2 or gpt-4.1-mini"
+                disabled={runInFlight}
               />
             </div>
 
@@ -265,6 +334,7 @@ export function App(): ReactElement {
                 value={settings.baseUrl ?? ''}
                 onChange={(event) => updateSettings({ baseUrl: event.target.value })}
                 placeholder="http://127.0.0.1:11434/v1/chat/completions"
+                disabled={runInFlight}
               />
             </div>
 
@@ -279,6 +349,7 @@ export function App(): ReactElement {
                 value={settings.apiKey}
                 onChange={(event) => updateSettings({ apiKey: event.target.value })}
                 placeholder={settings.provider === 'ollama' ? 'Optional for local Ollama' : 'Required for this provider'}
+                disabled={runInFlight}
               />
             </div>
           </div>
@@ -294,7 +365,7 @@ export function App(): ReactElement {
           <div className="rounded-3xl border border-slate-800 bg-slate-950/60 p-4">
             <div className="mb-3 flex items-center justify-between gap-3">
               <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">Action feed</h2>
-              <span className="text-xs text-slate-500">Streaming run events over a live Port</span>
+              <span className="text-xs text-slate-500">One run per Port, ordered by seq</span>
             </div>
             <ActionFeed entries={feed} />
           </div>

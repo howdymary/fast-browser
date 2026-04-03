@@ -5,29 +5,24 @@ import type {
   ContentExecuteResponse,
   ContentExtractRequest,
   ContentExtractResponse,
-  RunPortMessage,
-  RunStreamUpdate,
-  RunTaskPortRequest,
+  RunEventServerMessage,
+  RunFinishServerMessage,
+  RunPortClientMessage,
 } from '../shared/messages';
 import { callLlm } from './llm-client';
-import { runAgentLoop } from './agent-loop';
+import { makeFeedEntry, runAgentLoop } from './agent-loop';
 import {
   DEFAULT_PROVIDER_SETTINGS,
   mergeProviderSettings,
   PROVIDER_SETTINGS_STORAGE_KEY,
   validateProviderSettings,
 } from '../shared/settings';
-import type { ActionFeedEntry, ExecutableAction, NavigateAction, ProviderSettings } from '../shared/types';
+import type { ExecutableAction, NavigateAction, ProviderSettings, RunPhase } from '../shared/types';
 
-const RUNNER_PORT_NAME = 'fast-browser-runner';
+const RUNNER_PORT_NAME = 'fast-browser.run';
 
-function makeFeedEntry(message: string, kind: ActionFeedEntry['kind'] = 'info'): ActionFeedEntry {
-  return {
-    id: crypto.randomUUID(),
-    kind,
-    message,
-    timestamp: new Date().toISOString(),
-  };
+function throwIfAborted(signal: AbortSignal): void {
+  signal.throwIfAborted();
 }
 
 async function getActiveTabId(): Promise<number> {
@@ -43,37 +38,85 @@ async function loadProviderSettings(): Promise<ProviderSettings> {
   return mergeProviderSettings(stored[PROVIDER_SETTINGS_STORAGE_KEY] as Partial<ProviderSettings> | undefined);
 }
 
-async function extractActivePageState(tabId: number, task?: string) {
+async function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const timeoutId = globalThis.setTimeout(() => {
+      signal.removeEventListener('abort', handleAbort);
+      resolve();
+    }, ms);
+
+    function handleAbort(): void {
+      globalThis.clearTimeout(timeoutId);
+      signal.removeEventListener('abort', handleAbort);
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+    }
+
+    signal.addEventListener('abort', handleAbort, { once: true });
+  });
+}
+
+async function extractActivePageState(
+  tabId: number,
+  task: string | undefined,
+  signal?: AbortSignal,
+) {
+  if (signal) {
+    throwIfAborted(signal);
+  }
   const request: ContentExtractRequest = {
     type: 'FAST_BROWSER_EXTRACT_PAGE_STATE',
     task,
   };
   const response = await chrome.tabs.sendMessage(tabId, request) as ContentExtractResponse;
+  if (signal) {
+    throwIfAborted(signal);
+  }
   if (!response.ok || !response.pageState) {
     throw new Error(response.error ?? 'The content script did not return a page snapshot.');
   }
   return response.pageState;
 }
 
-async function executeContentAction(tabId: number, action: ExecutableAction, snapshotId: string): Promise<void> {
+async function executeContentAction(
+  tabId: number,
+  action: ExecutableAction,
+  snapshotId: string,
+  signal: AbortSignal,
+): Promise<void> {
+  throwIfAborted(signal);
   const request: ContentExecuteRequest = {
     type: 'FAST_BROWSER_EXECUTE_ACTION',
     action,
     snapshotId,
   };
   const response = await chrome.tabs.sendMessage(tabId, request) as ContentExecuteResponse;
+  throwIfAborted(signal);
   if (!response.ok) {
     throw new Error(response.error ?? 'The content script could not execute the action.');
   }
 }
 
-async function navigateTab(tabId: number, action: NavigateAction): Promise<void> {
+async function navigateTab(tabId: number, action: NavigateAction, signal: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
   await chrome.tabs.update(tabId, { url: action.url });
-  await new Promise<void>((resolve) => {
+  throwIfAborted(signal);
+
+  await new Promise<void>((resolve, reject) => {
     const timeoutId = globalThis.setTimeout(() => {
-      chrome.tabs.onUpdated.removeListener(handleUpdate);
+      cleanup();
       resolve();
     }, 4000);
+
+    function cleanup(): void {
+      globalThis.clearTimeout(timeoutId);
+      chrome.tabs.onUpdated.removeListener(handleUpdate);
+      signal.removeEventListener('abort', handleAbort);
+    }
+
+    function handleAbort(): void {
+      cleanup();
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+    }
 
     function handleUpdate(
       updatedTabId: number,
@@ -81,44 +124,14 @@ async function navigateTab(tabId: number, action: NavigateAction): Promise<void>
       _tab: chrome.tabs.Tab,
     ): void {
       if (updatedTabId === tabId && changeInfo.status === 'complete') {
-        globalThis.clearTimeout(timeoutId);
-        chrome.tabs.onUpdated.removeListener(handleUpdate);
+        cleanup();
         resolve();
       }
     }
 
     chrome.tabs.onUpdated.addListener(handleUpdate);
+    signal.addEventListener('abort', handleAbort, { once: true });
   });
-}
-
-interface RunTaskOptions {
-  tabId: number;
-  task: string;
-  settings: ProviderSettings;
-  emitUpdate?: (update: Omit<RunStreamUpdate, 'type' | 'runId'>) => Promise<void> | void;
-  isCancelled?: () => boolean;
-}
-
-async function runTask(options: RunTaskOptions): Promise<BackgroundResponse> {
-  return runAgentLoop(
-    {
-      task: options.task,
-      settings: options.settings ?? DEFAULT_PROVIDER_SETTINGS,
-    },
-    {
-      getPageState: () => extractActivePageState(options.tabId, options.task),
-      executeAction: async (action, snapshotId) => {
-        await executeContentAction(options.tabId, action, snapshotId);
-        await new Promise((resolve) => globalThis.setTimeout(resolve, action.action === 'click' ? 500 : 150));
-      },
-      navigate: async (action) => {
-        await navigateTab(options.tabId, action);
-      },
-      callModel: callLlm,
-      emitUpdate: options.emitUpdate,
-      isCancelled: options.isCancelled,
-    },
-  );
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
@@ -130,157 +143,179 @@ chrome.runtime.onConnect.addListener((port) => {
     return;
   }
 
-  let disconnected = false;
-  let activeRunId: string | null = null;
+  let started = false;
+  let closed = false;
+  let controller: AbortController | null = null;
+  let runId: string | null = null;
+  let seq = 0;
+  let finishSent = false;
+
+  function nextSeq(): number {
+    seq += 1;
+    return seq;
+  }
+
+  function postEvent(step: number, phase: RunPhase, entry?: ReturnType<typeof makeFeedEntry>, pageState?: BackgroundResponse['pageState']): void {
+    if (closed || !runId) {
+      return;
+    }
+    const message: RunEventServerMessage = {
+      type: 'FAST_BROWSER_RUN_EVENT',
+      runId,
+      seq: nextSeq(),
+      step,
+      phase,
+      entry,
+      pageState,
+    };
+    port.postMessage(message);
+  }
+
+  function postFinish(payload: {
+    ok: boolean;
+    finalMessage?: string;
+    error?: string;
+    pageState?: BackgroundResponse['pageState'];
+  }): void {
+    if (closed || !runId || finishSent) {
+      return;
+    }
+    finishSent = true;
+    const message: RunFinishServerMessage = {
+      type: 'FAST_BROWSER_RUN_FINISH',
+      runId,
+      seq: nextSeq(),
+      ok: payload.ok,
+      finalMessage: payload.finalMessage,
+      error: payload.error,
+      pageState: payload.pageState,
+    };
+    port.postMessage(message);
+  }
+
+  function cancelRun(reason: string): void {
+    if (controller && !controller.signal.aborted) {
+      controller.abort(new DOMException(reason, 'AbortError'));
+    }
+  }
 
   port.onDisconnect.addListener(() => {
-    disconnected = true;
+    closed = true;
+    cancelRun('Port disconnected');
   });
 
-  port.onMessage.addListener((message: RunPortMessage | RunTaskPortRequest) => {
+  port.onMessage.addListener((message: RunPortClientMessage) => {
+    if (message.type === 'FAST_BROWSER_RUN_CANCEL') {
+      if (runId && message.runId === runId) {
+        cancelRun('Run cancelled by user');
+      }
+      return;
+    }
+
     if (message.type !== 'FAST_BROWSER_RUN_START') {
       return;
     }
 
-    if (activeRunId) {
-      port.postMessage({
-        type: 'FAST_BROWSER_RUN_UPDATE',
-        runId: activeRunId,
-        step: 0,
-        phase: 'error',
-        status: 'error',
-        feed: [makeFeedEntry('A run is already active on this port.', 'error')],
-        error: 'A run is already active on this port.',
+    if (started) {
+      postFinish({
         ok: false,
-      } satisfies RunStreamUpdate);
+        error: 'A run is already active on this port.',
+      });
       return;
     }
 
-    activeRunId = crypto.randomUUID();
+    started = true;
+    runId = message.runId;
+    controller = new AbortController();
 
     void (async () => {
       try {
         const tabId = await getActiveTabId();
+        throwIfAborted(controller.signal);
         const settings = await loadProviderSettings();
         const settingsError = validateProviderSettings(settings);
         if (settingsError) {
-          if (!disconnected) {
-            port.postMessage({
-              type: 'FAST_BROWSER_RUN_UPDATE',
-              runId: activeRunId!,
-              step: 0,
-              phase: 'error',
-              status: 'error',
-              feed: [makeFeedEntry(settingsError, 'error')],
-              error: settingsError,
-              ok: false,
-            } satisfies RunStreamUpdate);
-          }
+          postEvent(0, 'error', makeFeedEntry(settingsError, 'error'));
+          postFinish({ ok: false, error: settingsError });
           return;
         }
 
-        const result = await runTask({
-          tabId,
-          task: message.task,
-          settings,
-          emitUpdate: async (update) => {
-            if (disconnected) {
-              return;
-            }
-            port.postMessage({
-              type: 'FAST_BROWSER_RUN_UPDATE',
-              runId: activeRunId!,
-              ...update,
-            } satisfies RunStreamUpdate);
+        const result = await runAgentLoop(
+          {
+            task: message.task,
+            settings: settings ?? DEFAULT_PROVIDER_SETTINGS,
           },
-          isCancelled: () => disconnected,
-        });
+          {
+            signal: controller.signal,
+            getPageState: () => extractActivePageState(tabId, message.task, controller!.signal),
+            executeAction: async (action, snapshotId) => {
+              await executeContentAction(tabId, action, snapshotId, controller!.signal);
+              await abortableDelay(action.action === 'click' ? 500 : 150, controller!.signal);
+            },
+            navigate: async (action) => {
+              await navigateTab(tabId, action, controller!.signal);
+            },
+            callModel: callLlm,
+            emitEvent: async (event) => {
+              postEvent(event.step, event.phase, event.entry, event.pageState);
+            },
+          },
+        );
 
-        if (!disconnected && result.feed.length === 0) {
-          port.postMessage({
-            type: 'FAST_BROWSER_RUN_UPDATE',
-            runId: activeRunId!,
-            step: 0,
-            phase: result.ok ? 'done' : 'error',
-            status: result.ok ? 'idle' : 'error',
-            pageState: result.pageState,
-            finalMessage: result.finalMessage,
-            error: result.error,
-            ok: result.ok,
-          } satisfies RunStreamUpdate);
+        if (!result.ok && result.error?.match(/cancelled/i)) {
+          postEvent(0, 'cancelled', makeFeedEntry('Run cancelled.', 'warning'));
         }
+
+        postFinish({
+          ok: result.ok,
+          finalMessage: result.finalMessage,
+          error: result.error,
+          pageState: result.pageState,
+        });
       } catch (error) {
-        if (!disconnected) {
-          port.postMessage({
-            type: 'FAST_BROWSER_RUN_UPDATE',
-            runId: activeRunId!,
-            step: 0,
-            phase: 'error',
-            status: 'error',
-            feed: [makeFeedEntry('Unable to run the browser agent.', 'error')],
-            error: error instanceof Error ? error.message : 'Unknown extension error.',
+        const isAbort = error instanceof DOMException && error.name === 'AbortError';
+        if (isAbort) {
+          postEvent(0, 'cancelled', makeFeedEntry('Run cancelled.', 'warning'));
+          postFinish({
             ok: false,
-          } satisfies RunStreamUpdate);
+            error: 'Run cancelled.',
+          });
+          return;
         }
-      } finally {
-        activeRunId = null;
+
+        const messageText = error instanceof Error ? error.message : 'Unknown extension error.';
+        postEvent(0, 'error', makeFeedEntry(messageText, 'error'));
+        postFinish({
+          ok: false,
+          error: messageText,
+        });
       }
     })();
   });
 });
 
 chrome.runtime.onMessage.addListener((message: BackgroundMessage, _sender, sendResponse) => {
+  if (message.type !== 'FAST_BROWSER_INSPECT_PAGE') {
+    return undefined;
+  }
+
   void (async () => {
     try {
       const tabId = await getActiveTabId();
-      if (message.type === 'FAST_BROWSER_INSPECT_PAGE') {
-        const pageState = await extractActivePageState(tabId, message.task);
-        sendResponse({
-          ok: true,
-          pageState,
-          feed: [
-            makeFeedEntry('Connected to the active tab.', 'success'),
-            makeFeedEntry(`Captured ${pageState.meta.elementCount} interactive elements.`),
-          ],
-        } satisfies BackgroundResponse);
-        return;
-      }
-
-      if (message.type !== 'FAST_BROWSER_RUN_TASK') {
-        sendResponse({
-          ok: false,
-          feed: [makeFeedEntry('Unknown background message.', 'error')],
-          error: 'Unknown background message.',
-        } satisfies BackgroundResponse);
-        return;
-      }
-
-      const settings = await loadProviderSettings();
-      const settingsError = validateProviderSettings(settings);
-      if (settingsError) {
-        sendResponse({
-          ok: false,
-          feed: [makeFeedEntry(settingsError, 'error')],
-          error: settingsError,
-        } satisfies BackgroundResponse);
-        return;
-      }
-
-      const result = await runTask({
-        tabId,
-        task: message.task,
-        settings: settings ?? DEFAULT_PROVIDER_SETTINGS,
-      });
-
+      const pageState = await extractActivePageState(tabId, message.task);
       sendResponse({
-        ...result,
-        feed: result.feed.length > 0 ? result.feed : [makeFeedEntry('The loop returned no feed entries.')],
+        ok: true,
+        pageState,
+        feed: [
+          makeFeedEntry('Connected to the active tab.', 'success'),
+          makeFeedEntry(`Captured ${pageState.meta.elementCount} interactive elements.`),
+        ],
       } satisfies BackgroundResponse);
     } catch (error) {
       sendResponse({
         ok: false,
         error: error instanceof Error ? error.message : 'Unknown extension error.',
-        feed: [makeFeedEntry('Unable to run the browser agent.', 'error')],
+        feed: [makeFeedEntry('Unable to inspect the current page.', 'error')],
       } satisfies BackgroundResponse);
     }
   })();

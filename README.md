@@ -10,7 +10,7 @@ This repo is intentionally starting small. The current scaffold now proves the c
 - DOM-native page extraction
 - React side panel for task entry and provider settings
 - first observe → plan → act → verify loop against the active tab
-- live step-by-step updates streamed to the side panel over a long-lived extension Port
+- live step-by-step updates streamed to the side panel over a dedicated per-run extension Port
 
 ## Current scope
 
@@ -39,6 +39,8 @@ Supported action types in this slice:
 
 The content script treats refs as snapshot-local. After every action, the page is re-extracted and old refs expire immediately.
 
+Each run now uses its own Port session, server events carry monotonically increasing `seq` numbers, and the side panel derives its UI state directly from the streamed phase events. Runs can also be cancelled explicitly, with cancellation threaded through the active model call and browser actions.
+
 ## Multi-provider support
 
 Yes, multi-provider support includes Ollama in this first action-loop slice.
@@ -53,7 +55,6 @@ The current implementation wires live calls for all three paths. The default loc
 
 What is still intentionally missing:
 
-- streaming run updates over a `Port`
 - richer action types like `select`, `extract`, or multi-action plans
 - robust page-settling logic for highly dynamic apps
 - file upload, iframe, and rich-editor flows
@@ -84,7 +85,6 @@ npm test
 
 Near-term priorities:
 
-- stream step-by-step run updates to the side panel
 - add a small action verifier and better page-settling logic
 - support richer but still safe actions like `select` and `extract`
 - harden prompt-injection defenses before broader release

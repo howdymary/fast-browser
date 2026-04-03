@@ -55,6 +55,7 @@ describe('runAgentLoop', () => {
         settings: DEFAULT_PROVIDER_SETTINGS,
       },
       {
+        signal: new AbortController().signal,
         getPageState,
         executeAction,
         navigate,
@@ -85,6 +86,7 @@ describe('runAgentLoop', () => {
         settings: DEFAULT_PROVIDER_SETTINGS,
       },
       {
+        signal: new AbortController().signal,
         getPageState: vi
           .fn<() => Promise<PageState>>()
           .mockResolvedValueOnce(firstPage)
@@ -95,22 +97,22 @@ describe('runAgentLoop', () => {
           .fn()
           .mockResolvedValueOnce('{"action":"click","ref":"@e1","reason":"Click search"}')
           .mockResolvedValueOnce('{"action":"done","result":"Found the results page.","reason":"Task complete"}'),
-        emitUpdate: async (update) => {
-          phases.push(update.phase);
+        emitEvent: async (event) => {
+          phases.push(event.phase);
         },
       },
     );
 
     expect(phases).toEqual([
-      'observe-start',
-      'observe-done',
-      'plan-start',
-      'plan-ready',
-      'act-start',
-      'act-result',
-      'verify-done',
-      'plan-start',
-      'plan-ready',
+      'observe',
+      'observe',
+      'plan',
+      'plan',
+      'act',
+      'act',
+      'verify',
+      'plan',
+      'plan',
       'done',
     ]);
   });
@@ -135,6 +137,7 @@ describe('runAgentLoop', () => {
         settings: DEFAULT_PROVIDER_SETTINGS,
       },
       {
+        signal: new AbortController().signal,
         getPageState: vi.fn().mockResolvedValue(page),
         executeAction: vi.fn(),
         navigate: vi.fn(),
@@ -149,6 +152,8 @@ describe('runAgentLoop', () => {
 
   it('stops cleanly when the run is cancelled', async () => {
     const phases: string[] = [];
+    const controller = new AbortController();
+    controller.abort(new DOMException('Run cancelled.', 'AbortError'));
 
     const result = await runAgentLoop(
       {
@@ -156,19 +161,19 @@ describe('runAgentLoop', () => {
         settings: DEFAULT_PROVIDER_SETTINGS,
       },
       {
+        signal: controller.signal,
         getPageState: vi.fn().mockResolvedValue(makePageState()),
         executeAction: vi.fn(),
         navigate: vi.fn(),
         callModel: vi.fn(),
-        emitUpdate: async (update) => {
-          phases.push(update.phase);
+        emitEvent: async (event) => {
+          phases.push(event.phase);
         },
-        isCancelled: () => true,
       },
     );
 
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/cancelled/i);
-    expect(phases).toEqual(['observe-start', 'cancelled']);
+    expect(phases).toEqual([]);
   });
 });

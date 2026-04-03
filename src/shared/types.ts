@@ -1,5 +1,3 @@
-export type AgentStatus = 'idle' | 'thinking' | 'acting' | 'verifying' | 'asking' | 'error';
-
 export type ProviderName = 'anthropic' | 'openai' | 'ollama';
 
 export interface ProviderSettings {
@@ -113,13 +111,11 @@ export interface AgentRunResult {
 }
 
 export type RunPhase =
-  | 'observe-start'
-  | 'observe-done'
-  | 'plan-start'
-  | 'plan-ready'
-  | 'act-start'
-  | 'act-result'
-  | 'verify-done'
+  | 'observe'
+  | 'plan'
+  | 'act'
+  | 'verify'
+  | 'awaiting-human'
   | 'done'
-  | 'error'
-  | 'cancelled';
+  | 'cancelled'
+  | 'error';

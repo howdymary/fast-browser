@@ -10,10 +10,12 @@ export async function callLlm(
   systemPrompt: string,
   messages: LlmMessage[],
   settings: ProviderSettings,
+  signal?: AbortSignal,
 ): Promise<string> {
   if (settings.provider === 'anthropic') {
     const response = await fetch(getProviderEndpoint(settings), {
       method: 'POST',
+      signal,
       headers: {
         'content-type': 'application/json',
         'x-api-key': settings.apiKey,
@@ -43,6 +45,7 @@ export async function callLlm(
 
   const response = await fetch(getProviderEndpoint(settings), {
     method: 'POST',
+    signal,
     headers: {
       'content-type': 'application/json',
       ...(settings.provider === 'ollama' ? {} : { authorization: `Bearer ${settings.apiKey}` }),
