@@ -3,10 +3,10 @@ import type { ReactElement } from 'react';
 import type { ActionFeedEntry } from '../../shared/types';
 
 const toneClasses: Record<ActionFeedEntry['kind'], string> = {
-  info: 'border-slate-700 bg-slate-900/70 text-slate-200',
-  success: 'border-emerald-700/70 bg-emerald-950/40 text-emerald-200',
-  warning: 'border-amber-700/70 bg-amber-950/40 text-amber-200',
-  error: 'border-rose-700/70 bg-rose-950/40 text-rose-200',
+  info: 'border-[#eadfce] bg-[#faf6ef] text-[#5b4d40]',
+  success: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+  warning: 'border-amber-200 bg-amber-50 text-amber-800',
+  error: 'border-rose-200 bg-rose-50 text-rose-700',
 };
 
 const MAX_VISIBLE_ENTRIES = 200;
@@ -20,8 +20,8 @@ export function ActionFeed({ entries }: ActionFeedProps): ReactElement {
 
   if (visibleEntries.length === 0) {
     return (
-      <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-950/40 p-4 text-sm text-slate-400">
-        No run activity yet. Start with “Inspect page” to capture the current tab, then run a short task.
+      <div className="rounded-3xl border border-dashed border-[#dccab0] bg-[#fbf7f0] p-5 text-sm leading-6 text-[#6d6255]">
+        No run activity yet. Enter a short prompt and run it. Fast Browser will inspect the current tab automatically before it acts.
       </div>
     );
   }
@@ -29,15 +29,31 @@ export function ActionFeed({ entries }: ActionFeedProps): ReactElement {
   return (
     <div className="space-y-3">
       {visibleEntries.map((entry) => (
-        <div
-          key={entry.id}
-          className={`rounded-2xl border px-3 py-2 text-sm shadow-sm ${toneClasses[entry.kind]}`}
-        >
-          <div className="font-medium">{entry.message}</div>
-          <div className="mt-1 text-xs opacity-70">
-            {new Date(entry.timestamp).toLocaleTimeString()}
+        entry.kind === 'info' || entry.kind === 'success' ? (
+          <div key={entry.id} className="flex gap-3 rounded-3xl bg-white/5 px-4 py-3 text-sm text-slate-100">
+            <div
+              className={`mt-1 h-2 w-2 shrink-0 rounded-full ${
+                entry.kind === 'success' ? 'bg-emerald-300' : 'bg-orange-300/90'
+              }`}
+            />
+            <div className="min-w-0 flex-1">
+              <div className="font-medium leading-6">{entry.message}</div>
+              <div className="mt-1 text-xs text-slate-500">
+                {new Date(entry.timestamp).toLocaleTimeString()}
+              </div>
+            </div>
           </div>
-        </div>
+        ) : (
+          <div
+            key={entry.id}
+            className={`rounded-3xl border px-4 py-3 text-sm shadow-[0_10px_30px_rgba(70,44,20,0.04)] ${toneClasses[entry.kind]}`}
+          >
+            <div className="font-medium leading-6">{entry.message}</div>
+            <div className="mt-1 text-xs opacity-60">
+              {new Date(entry.timestamp).toLocaleTimeString()}
+            </div>
+          </div>
+        )
       ))}
     </div>
   );

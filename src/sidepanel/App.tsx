@@ -7,11 +7,24 @@ import type {
   RunPortClientMessage,
   RunPortServerMessage,
 } from '../shared/messages';
-import type { ProviderSettings, RunPhase } from '../shared/types';
-import { validateProviderSettings } from '../shared/settings';
+import {
+  getProviderEndpoint,
+  getProviderPreset,
+  providerNeedsApiKey,
+  validateProviderSettings,
+} from '../shared/settings';
+import type { ProviderName, ProviderSettings, RunPhase } from '../shared/types';
 import { ActionFeed } from './components/ActionFeed';
 import { useAgentStore } from './stores/agent-store';
 import { useSettingsStore } from './stores/settings-store';
+
+const MAX_STEPS_DEFAULT = 6;
+const TASK_SUGGESTIONS = [
+  'Summarize this page in 3 bullets.',
+  'Find the pricing details on this page.',
+  'Click the login button.',
+  'Find the primary search box and focus it.',
+];
 
 interface FormErrors {
   task?: string;
@@ -35,7 +48,7 @@ function validateRunForm(
   const errors: FormErrors = {};
 
   if (!task.trim()) {
-    errors.task = 'Enter a task before running the agent.';
+    errors.task = 'Enter a short instruction before running the agent.';
   }
 
   if (!/^[a-zA-Z0-9._:/-]{1,128}$/.test(settings.model.trim())) {
@@ -46,10 +59,8 @@ function validateRunForm(
     errors.maxSteps = 'Choose a whole number between 1 and 20.';
   }
 
-  if (settings.provider === 'ollama') {
-    if (!settings.baseUrl?.trim()) {
-      errors.endpoint = 'Set an Ollama endpoint before running.';
-    }
+  if (settings.provider === 'ollama' && !settings.baseUrl?.trim()) {
+    errors.endpoint = 'Set an Ollama endpoint before running.';
   } else if (settings.baseUrl?.trim()) {
     try {
       new URL(settings.baseUrl);
@@ -58,8 +69,8 @@ function validateRunForm(
     }
   }
 
-  if (settings.provider !== 'ollama' && !settings.apiKey.trim()) {
-    errors.apiKey = `An API key is required for ${settings.provider}.`;
+  if (providerNeedsApiKey(settings) && !settings.apiKey.trim()) {
+    errors.apiKey = `Paste an API key for ${providerLabel(settings.provider)}.`;
   }
 
   return errors;
@@ -68,20 +79,53 @@ function validateRunForm(
 function statusLabelForPhase(phase: RunPhase | null): string {
   switch (phase) {
     case 'observe':
-      return 'Reading the current page';
+      return 'Reading page';
     case 'plan':
-      return 'Planning the next step';
+      return 'Thinking';
     case 'act':
-      return 'Executing an action';
+      return 'Taking action';
     case 'verify':
-      return 'Verifying the result';
+      return 'Checking result';
     case 'awaiting-human':
-      return 'Waiting for confirmation';
+      return 'Waiting for you';
     case 'error':
       return 'Needs attention';
     default:
       return 'Ready';
   }
+}
+
+function providerLabel(provider: ProviderName): string {
+  switch (provider) {
+    case 'openai':
+      return 'OpenAI';
+    case 'anthropic':
+      return 'Anthropic';
+    case 'ollama':
+      return 'Ollama';
+  }
+}
+
+function providerHint(settings: ProviderSettings): string {
+  switch (settings.provider) {
+    case 'openai':
+      return 'Paste your OpenAI API key and run. The key stays in session storage only.';
+    case 'anthropic':
+      return 'Paste your Anthropic API key. Fast Browser stores it for this browser session only.';
+    case 'ollama':
+      return 'Use a local Ollama model for the easiest private setup. The default endpoint works for most local installs.';
+  }
+}
+
+function providerSummary(settings: ProviderSettings): string {
+  const label = providerLabel(settings.provider);
+  if (providerNeedsApiKey(settings) && !settings.apiKey.trim()) {
+    return `${label} · API key needed`;
+  }
+  if (settings.provider === 'ollama') {
+    return `${label} · local ${settings.model}`;
+  }
+  return `${label} · ${settings.model}`;
 }
 
 function isSupportedPageUrl(url: string | undefined): boolean {
@@ -98,7 +142,7 @@ async function getCurrentSiteAccess(): Promise<SiteAccessState> {
   if (!tab || !url || !isSupportedPageUrl(url)) {
     return {
       status: 'unsupported',
-      label: 'Open a normal website tab to inspect or automate it.',
+      label: 'Open a normal website tab before asking Fast Browser to inspect or automate it.',
     };
   }
 
@@ -110,8 +154,8 @@ async function getCurrentSiteAccess(): Promise<SiteAccessState> {
     status: granted ? 'granted' : 'not-granted',
     origin,
     label: granted
-      ? `Persistent access granted for ${origin}.`
-      : `Fast Browser can run on ${origin} now via the toolbar click, or you can grant persistent site access.`,
+      ? `Fast Browser can keep working on ${origin} without asking again.`
+      : `Fast Browser needs access to ${origin} to read and interact with the page.`,
   };
 }
 
@@ -140,12 +184,16 @@ export function App(): ReactElement {
     load: loadSettings,
     save: saveSettings,
   } = useSettingsStore();
-  const [maxSteps, setMaxSteps] = useState(6);
+
+  const [maxSteps, setMaxSteps] = useState(MAX_STEPS_DEFAULT);
   const [validationAttempted, setValidationAttempted] = useState(false);
   const [siteAccess, setSiteAccess] = useState<SiteAccessState>({
     status: 'unknown',
     label: 'Checking site access…',
   });
+  const [showSetup, setShowSetup] = useState(false);
+  const [showAdvancedSetup, setShowAdvancedSetup] = useState(false);
+  const [showAdvancedControls, setShowAdvancedControls] = useState(false);
 
   const runnerPortRef = useRef<chrome.runtime.Port | null>(null);
   const currentRunIdRef = useRef<string | null>(null);
@@ -167,10 +215,16 @@ export function App(): ReactElement {
     void getCurrentSiteAccess().then(setSiteAccess).catch(() => {
       setSiteAccess({
         status: 'unknown',
-        label: 'Fast Browser could not determine current site access.',
+        label: 'Fast Browser could not determine the current site access state.',
       });
     });
   }, []);
+
+  useEffect(() => {
+    if (providerNeedsApiKey(settings) && !settings.apiKey.trim()) {
+      setShowSetup(true);
+    }
+  }, [settings]);
 
   useEffect(() => {
     return () => {
@@ -191,11 +245,18 @@ export function App(): ReactElement {
 
   const statusLabel = useMemo(() => statusLabelForPhase(phase), [phase]);
   const runInFlight = currentRunId !== null;
+  const providerValidationError = useMemo(
+    () => validateProviderSettings(settings),
+    [settings],
+  );
   const formErrors = useMemo<FormErrors>(
     () => (validationAttempted ? validateRunForm(task, maxSteps, settings) : {}),
     [maxSteps, settings, task, validationAttempted],
   );
   const hasValidationErrors = Object.keys(formErrors).length > 0;
+  const showSetupCard = showSetup || Boolean(providerValidationError);
+  const showSiteAccessBanner = siteAccess.status === 'unsupported'
+    || (siteAccess.status === 'not-granted' && (validationAttempted || Boolean(error)));
 
   function cleanupRunnerPort(options?: { disconnect?: boolean }): void {
     currentRunIdRef.current = null;
@@ -239,17 +300,11 @@ export function App(): ReactElement {
       setPageState(finish.pageState);
     }
 
-    if (finish.error) {
-      setError(finish.error);
-    } else {
-      setError(null);
-    }
+    setError(finish.error ?? null);
 
     if (phaseRef.current === 'awaiting-human') {
       setPhase('awaiting-human');
-    } else if (finish.ok) {
-      setPhase(null);
-    } else if ((finish.error ?? '').match(/cancelled/i)) {
+    } else if (finish.ok || (finish.error ?? '').match(/cancelled/i)) {
       setPhase(null);
     } else {
       setPhase('error');
@@ -261,7 +316,6 @@ export function App(): ReactElement {
   async function handleInspectPage(): Promise<void> {
     setPhase('observe');
     setError(null);
-    resetFeed();
     setSiteAccess(await getCurrentSiteAccess());
 
     const response = await chrome.runtime.sendMessage({
@@ -271,7 +325,7 @@ export function App(): ReactElement {
 
     if (!response.ok || !response.pageState) {
       setPhase('error');
-      setError(response.error ?? 'Unknown extension error.');
+      setError(response.error ?? 'Fast Browser could not inspect this page.');
       appendFeed(response.feed ?? []);
       return;
     }
@@ -287,8 +341,15 @@ export function App(): ReactElement {
 
     const validationError = validateProviderSettings(settings);
     const nextFormErrors = validateRunForm(task, maxSteps, settings);
-    if (validationError || Object.keys(nextFormErrors).length > 0) {
-      setError(validationError ?? 'Fix the highlighted fields before running.');
+
+    if (validationError) {
+      setShowSetup(true);
+      setError(validationError);
+      return;
+    }
+
+    if (Object.keys(nextFormErrors).length > 0) {
+      setError(nextFormErrors.task ?? nextFormErrors.maxSteps ?? 'Fix the highlighted fields and try again.');
       return;
     }
 
@@ -316,7 +377,7 @@ export function App(): ReactElement {
 
       if (currentRunIdRef.current === runId) {
         setPhase('error');
-        setError('The background worker disconnected. Reopen the side panel and run the task again.');
+        setError('Connection lost. Reopen the panel and try the run again.');
       }
       cleanupRunnerPort({ disconnect: false });
     }
@@ -351,7 +412,7 @@ export function App(): ReactElement {
       setSiteAccess({
         status: 'granted',
         origin,
-        label: `Persistent access granted for ${origin}.`,
+        label: `Fast Browser can keep working on ${origin} without asking again.`,
       });
       return;
     }
@@ -359,16 +420,15 @@ export function App(): ReactElement {
     setSiteAccess({
       status: 'not-granted',
       origin,
-      label: `Persistent access for ${origin} was not granted. You can still use the temporary active-tab permission after opening the panel from the toolbar.`,
+      label: `Site access for ${origin} was not granted. You can still use temporary active-tab access after opening the panel from the toolbar.`,
     });
   }
-
-  const showWelcome = !pageState && feed.length === 0 && !runInFlight;
 
   function handleCancelRun(): void {
     if (!runnerPortRef.current || !currentRunIdRef.current) {
       return;
     }
+
     const cancelMessage: RunPortClientMessage = {
       type: 'FAST_BROWSER_RUN_CANCEL',
       runId: currentRunIdRef.current,
@@ -376,316 +436,451 @@ export function App(): ReactElement {
     runnerPortRef.current.postMessage(cancelMessage);
   }
 
+  function applyProviderPreset(provider: ProviderName): void {
+    const preset = getProviderPreset(provider);
+    updateSettings({
+      ...preset,
+      apiKey: settings.apiKey,
+    });
+  }
+
+  async function handleSaveSetup(): Promise<void> {
+    setValidationAttempted(true);
+    const validationError = validateProviderSettings(settings);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
+    await saveSettings();
+    setError(null);
+    setShowSetup(false);
+  }
+
+  function handleClearState(): void {
+    setPageState(null);
+    setError(null);
+    resetFeed();
+    setPhase(null);
+    setValidationAttempted(false);
+    cleanupRunnerPort();
+  }
+
+  const currentEndpoint = getProviderEndpoint(settings);
+
   return (
-    <main className="min-h-screen px-4 py-5 text-slate-50">
+    <main className="min-h-screen px-4 py-5 text-stone-50">
       <div className="mx-auto flex max-w-3xl flex-col gap-4">
-        <section className="rounded-3xl border border-slate-800 bg-slate-950/70 p-4 shadow-2xl shadow-slate-950/40">
-          <div className="flex items-center justify-between gap-3">
-            <div>
+        <section className="rounded-[30px] border border-white/10 bg-[radial-gradient(circle_at_top,rgba(251,146,60,0.14),transparent_35%),linear-gradient(180deg,rgba(17,24,39,0.98),rgba(11,15,25,0.98))] p-5 shadow-[0_24px_60px_rgba(2,6,23,0.45)]">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="max-w-xl">
               <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-sky-400/30 bg-sky-500/10 text-sm font-semibold text-sky-200">
+                <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-orange-300/25 bg-orange-400/10 text-sm font-semibold text-orange-100">
                   FB
                 </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.25em] text-sky-300">Fast Browser</p>
-                  <h1 className="mt-1 text-xl font-semibold">Alpha Extension</h1>
+                <div className="space-y-1">
+                  <p className="text-[11px] uppercase tracking-[0.28em] text-orange-200/80">Fast Browser</p>
+                  <h1 className="text-2xl font-semibold tracking-tight text-white">
+                    Ask me to use the current page
+                  </h1>
                 </div>
               </div>
-              <p className="mt-1 text-xs text-slate-400">
-                {phase ? `Live phase: ${phase}` : 'Task runner idle'}
-              </p>
-              <p className="mt-1 text-xs text-slate-500">
-                {currentRunId ? `Run ${currentRunId.slice(0, 8)} · seq ${lastSeq}` : 'No active run'}
+              <p className="mt-3 max-w-lg text-sm leading-6 text-slate-300">
+                Tell Fast Browser what you want done on this tab. It reads the page, chooses the next action,
+                and checks the result as it goes.
               </p>
             </div>
-            <div className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/70 px-3 py-1 text-xs text-slate-300">
-              {phase === 'plan' ? (
-                <span className="fast-browser-spinner h-2.5 w-2.5 rounded-full border border-sky-300 border-t-transparent" aria-hidden="true" />
-              ) : null}
-              {statusLabel}
-            </div>
-          </div>
 
-          <label className="mt-4 block text-sm text-slate-300" htmlFor="task-input">
-            Task prompt
-          </label>
-          <textarea
-            id="task-input"
-            className="mt-2 min-h-24 w-full rounded-2xl border border-slate-700 bg-slate-900/80 px-3 py-3 text-sm text-slate-50 outline-none ring-0 placeholder:text-slate-500 focus:border-sky-400"
-            placeholder="Example: Find the primary search box and summarize the main calls to action on this page."
-            value={task}
-            onChange={(event) => setTask(event.target.value)}
-          />
-          {validationAttempted && formErrors.task ? (
-            <p className="mt-2 text-xs text-rose-300">{formErrors.task}</p>
-          ) : null}
-
-          <div className="mt-4 flex flex-wrap gap-3">
-            <button
-              type="button"
-              className="rounded-full bg-sky-500 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
-              onClick={() => { void handleInspectPage(); }}
-              disabled={runInFlight}
-            >
-              Inspect page
-            </button>
-            <button
-              type="button"
-              className="rounded-full bg-emerald-400 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
-              onClick={() => { void handleRunAgent(); }}
-              disabled={runInFlight}
-            >
-              Run agent
-            </button>
-            <button
-              type="button"
-              className="rounded-full border border-amber-600 px-4 py-2 text-sm text-amber-200 transition hover:border-amber-400 hover:bg-amber-950/40 disabled:cursor-not-allowed disabled:border-slate-700 disabled:text-slate-500"
-              onClick={handleCancelRun}
-              disabled={!runInFlight}
-            >
-              Cancel run
-            </button>
-            <button
-              type="button"
-              className="rounded-full border border-slate-700 px-4 py-2 text-sm text-slate-200 transition hover:border-slate-500 hover:bg-slate-900 disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-500"
-              onClick={() => {
-                setPageState(null);
-                setError(null);
-                resetFeed();
-                setPhase(null);
-                setValidationAttempted(false);
-                cleanupRunnerPort();
-              }}
-              disabled={runInFlight}
-            >
-              Clear
-            </button>
-          </div>
-
-          <div className="mt-4 grid gap-3 rounded-2xl border border-slate-800 bg-slate-900/60 p-3 md:grid-cols-2">
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="provider-select">
-                Provider
-              </label>
-              <select
-                id="provider-select"
-                className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50"
-                value={settings.provider}
-                onChange={(event) => updateSettings({ provider: event.target.value as typeof settings.provider })}
-                disabled={runInFlight}
-              >
-                <option value="ollama">Ollama</option>
-                <option value="openai">OpenAI-compatible</option>
-                <option value="anthropic">Anthropic</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="model-input">
-                Model
-              </label>
-              <input
-                id="model-input"
-                className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50"
-                value={settings.model}
-                onChange={(event) => updateSettings({ model: event.target.value })}
-                placeholder="llama3.2 or gpt-4.1-mini"
-                disabled={runInFlight}
-              />
-              {validationAttempted && formErrors.model ? (
-                <p className="mt-2 text-xs text-rose-300">{formErrors.model}</p>
-              ) : null}
-            </div>
-
-            <div className="md:col-span-2">
-              <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="base-url-input">
-                Endpoint
-              </label>
-              <input
-                id="base-url-input"
-                className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50"
-                value={settings.baseUrl ?? ''}
-                onChange={(event) => updateSettings({ baseUrl: event.target.value })}
-                placeholder="http://127.0.0.1:11434/v1/chat/completions"
-                disabled={runInFlight}
-              />
-              {validationAttempted && formErrors.endpoint ? (
-                <p className="mt-2 text-xs text-rose-300">{formErrors.endpoint}</p>
-              ) : null}
-            </div>
-
-            <div className="md:col-span-2">
-              <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="api-key-input">
-                API key
-              </label>
-              <input
-                id="api-key-input"
-                type="password"
-                className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50"
-                value={settings.apiKey}
-                onChange={(event) => updateSettings({ apiKey: event.target.value })}
-                placeholder={settings.provider === 'ollama' ? 'Optional for local Ollama' : 'Required for this provider'}
-                disabled={runInFlight}
-              />
-              {validationAttempted && formErrors.apiKey ? (
-                <p className="mt-2 text-xs text-rose-300">{formErrors.apiKey}</p>
-              ) : null}
-            </div>
-
-            <div className="md:col-span-2">
-              <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="max-steps-input">
-                Max steps
-              </label>
-              <input
-                id="max-steps-input"
-                type="number"
-                min={1}
-                max={20}
-                className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50"
-                value={Number.isFinite(maxSteps) ? maxSteps : ''}
-                onChange={(event) => setMaxSteps(Number.parseInt(event.target.value, 10))}
-                disabled={runInFlight}
-              />
-              <p className="mt-1 text-xs text-slate-500">Use 1 to 20 steps per run.</p>
-              {validationAttempted && formErrors.maxSteps ? (
-                <p className="mt-2 text-xs text-rose-300">{formErrors.maxSteps}</p>
-              ) : null}
-            </div>
-          </div>
-
-          {error ? (
-            <div className="mt-4 rounded-2xl border border-rose-700/70 bg-rose-950/40 px-3 py-2 text-sm text-rose-200">
-              {error}
-            </div>
-          ) : null}
-          {validationAttempted && hasValidationErrors ? (
-            <div className="mt-3 rounded-2xl border border-amber-700/70 bg-amber-950/30 px-3 py-2 text-sm text-amber-200">
-              Fix the highlighted fields before starting a run.
-            </div>
-          ) : null}
-
-          <div className="mt-3 rounded-2xl border border-slate-800 bg-slate-900/60 px-3 py-3 text-sm text-slate-300">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Site access</div>
-                <div className="mt-1">{siteAccess.label}</div>
+            <div className="flex flex-col items-start gap-2 sm:items-end">
+              <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-200 backdrop-blur">
+                {phase === 'plan' ? (
+                  <span
+                    className="fast-browser-spinner h-2.5 w-2.5 rounded-full border border-orange-200 border-t-transparent"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <span className="h-2.5 w-2.5 rounded-full bg-emerald-400/80" aria-hidden="true" />
+                )}
+                {statusLabel}
               </div>
               <button
                 type="button"
-                className="rounded-full border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-slate-500 hover:bg-slate-900 disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-500"
-                onClick={() => { void handleGrantSiteAccess(); }}
-                disabled={runInFlight || siteAccess.status === 'unsupported' || siteAccess.status === 'granted'}
+                className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:border-white/20 hover:bg-white/10"
+                onClick={() => setShowSetup((current) => !current)}
               >
-                {siteAccess.status === 'granted' ? 'Granted' : 'Grant this site'}
+                {showSetupCard ? 'Hide model setup' : 'Model setup'}
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <span className="rounded-full bg-white/6 px-3 py-1 text-xs text-slate-200">
+              {providerSummary(settings)}
+            </span>
+            <span className="rounded-full bg-white/6 px-3 py-1 text-xs text-slate-400">
+              {siteAccess.status === 'granted' ? 'Site access ready' : 'Uses page access when available'}
+            </span>
+          </div>
+
+          {showSetupCard ? (
+            <div className="mt-4 rounded-[26px] border border-white/10 bg-black/20 p-4 backdrop-blur">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-semibold text-white">Model setup</h2>
+                  <p className="mt-1 max-w-lg text-sm text-slate-300">{providerHint(settings)}</p>
+                </div>
+                <button
+                  type="button"
+                  className="rounded-full border border-white/10 px-3 py-1.5 text-xs text-slate-300 transition hover:border-white/20 hover:bg-white/5"
+                  onClick={() => setShowSetup(false)}
+                  disabled={Boolean(providerValidationError)}
+                >
+                  Hide
+                </button>
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                {(['openai', 'anthropic', 'ollama'] as const).map((provider) => (
+                  <button
+                    key={provider}
+                    type="button"
+                    className={`rounded-full px-3 py-1.5 text-sm transition ${
+                      settings.provider === provider
+                        ? 'bg-orange-300 text-slate-950'
+                        : 'border border-white/10 bg-white/5 text-slate-200 hover:border-white/20 hover:bg-white/10'
+                    }`}
+                    onClick={() => applyProviderPreset(provider)}
+                    disabled={runInFlight}
+                  >
+                    {providerLabel(provider)}
+                  </button>
+                ))}
+              </div>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="model-input">
+                    Model
+                  </label>
+                  <input
+                    id="model-input"
+                    className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 text-sm text-slate-50 outline-none focus:border-orange-300/60"
+                    value={settings.model}
+                    onChange={(event) => updateSettings({ model: event.target.value })}
+                    placeholder="gpt-4.1-mini, claude-sonnet-4, llama3.2"
+                    disabled={runInFlight}
+                  />
+                  {validationAttempted && formErrors.model ? (
+                    <p className="mt-2 text-xs text-rose-300">{formErrors.model}</p>
+                  ) : null}
+                </div>
+
+                {providerNeedsApiKey(settings) ? (
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="api-key-input">
+                      API key
+                    </label>
+                    <input
+                      id="api-key-input"
+                      type="password"
+                      className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 text-sm text-slate-50 outline-none focus:border-orange-300/60"
+                      value={settings.apiKey}
+                      onChange={(event) => updateSettings({ apiKey: event.target.value })}
+                      placeholder={`Paste your ${providerLabel(settings.provider)} API key`}
+                      disabled={runInFlight}
+                    />
+                    <p className="mt-2 text-xs text-slate-500">
+                      Stored in session only. It is not persisted to local storage.
+                    </p>
+                    {validationAttempted && formErrors.apiKey ? (
+                      <p className="mt-2 text-xs text-rose-300">{formErrors.apiKey}</p>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-emerald-500/15 bg-emerald-500/8 px-4 py-3 text-sm text-emerald-100">
+                    <div className="font-medium">Local mode</div>
+                    <div className="mt-1 text-emerald-100/80">
+                      Fast Browser will use your local Ollama server at the default endpoint unless you change it below.
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="button"
+                className="mt-4 text-sm font-medium text-orange-200 transition hover:text-orange-100"
+                onClick={() => setShowAdvancedSetup((current) => !current)}
+              >
+                {showAdvancedSetup ? 'Hide advanced model options' : 'Show advanced model options'}
+              </button>
+
+              {showAdvancedSetup ? (
+                <div className="mt-3 rounded-2xl border border-white/8 bg-slate-950/70 p-3">
+                  <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="base-url-input">
+                    Endpoint
+                  </label>
+                  <input
+                    id="base-url-input"
+                    className="mt-2 w-full rounded-2xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-slate-50 outline-none focus:border-orange-300/60"
+                    value={settings.baseUrl ?? ''}
+                    onChange={(event) => updateSettings({ baseUrl: event.target.value })}
+                    placeholder={currentEndpoint}
+                    disabled={runInFlight}
+                  />
+                  <p className="mt-2 text-xs text-slate-500">
+                    Leave this at the default unless you are using a custom OpenAI-compatible endpoint.
+                  </p>
+                  {validationAttempted && formErrors.endpoint ? (
+                    <p className="mt-2 text-xs text-rose-300">{formErrors.endpoint}</p>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <div className="mt-4 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  className="rounded-full bg-orange-300 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-orange-200"
+                  onClick={() => { void handleSaveSetup(); }}
+                  disabled={runInFlight}
+                >
+                  Save setup
+                </button>
+                <span className="self-center text-xs text-slate-500">
+                  Current endpoint: {currentEndpoint}
+                </span>
+              </div>
+            </div>
+          ) : null}
+
+          {showSiteAccessBanner ? (
+            <div className="mt-4 rounded-[24px] border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-200">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="font-medium text-white">
+                    {siteAccess.status === 'unsupported'
+                      ? 'Fast Browser cannot run on this tab'
+                      : 'Fast Browser needs access to this site'}
+                  </div>
+                  <p className="mt-1 max-w-xl text-sm text-slate-300">{siteAccess.label}</p>
+                </div>
+                {siteAccess.status !== 'unsupported' ? (
+                  <button
+                    type="button"
+                    className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-slate-100 transition hover:border-white/20 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => { void handleGrantSiteAccess(); }}
+                    disabled={runInFlight || siteAccess.status === 'granted'}
+                  >
+                    {siteAccess.status === 'granted' ? 'Allowed' : 'Allow on this site'}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
+          <div className="mt-5 rounded-[26px] border border-white/10 bg-black/20 p-4">
+            <label className="block text-xs font-semibold uppercase tracking-[0.25em] text-slate-400" htmlFor="task-input">
+              What should Fast Browser do?
+            </label>
+            <textarea
+              id="task-input"
+              className="mt-3 min-h-32 w-full rounded-[22px] border border-white/10 bg-slate-950/85 px-4 py-4 text-sm leading-6 text-slate-50 outline-none placeholder:text-slate-500 focus:border-orange-300/60"
+              placeholder="Summarize this page, find the pricing, click the login button, or focus the main search box."
+              value={task}
+              onChange={(event) => setTask(event.target.value)}
+            />
+            {validationAttempted && formErrors.task ? (
+              <p className="mt-2 text-xs text-rose-300">{formErrors.task}</p>
+            ) : null}
+
+            <div className="mt-3 flex flex-wrap gap-2">
+              {TASK_SUGGESTIONS.map((suggestion) => (
+                <button
+                  key={suggestion}
+                  type="button"
+                  className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-200 transition hover:border-white/20 hover:bg-white/10"
+                  onClick={() => setTask(suggestion)}
+                  disabled={runInFlight}
+                >
+                  {suggestion}
+                </button>
+              ))}
+            </div>
+
+            {phase === 'plan' ? (
+              <div className="mt-4 inline-flex items-center gap-2 rounded-full bg-orange-400/10 px-3 py-1.5 text-sm text-orange-100">
+                <span
+                  className="fast-browser-spinner h-3 w-3 rounded-full border border-orange-200 border-t-transparent"
+                  aria-hidden="true"
+                />
+                Thinking about the next step…
+              </div>
+            ) : null}
+
+            {error ? (
+              <div className="mt-4 rounded-2xl border border-rose-700/60 bg-rose-950/40 px-3 py-2 text-sm text-rose-100">
+                {error}
+              </div>
+            ) : null}
+
+            {validationAttempted && hasValidationErrors && !error ? (
+              <div className="mt-4 rounded-2xl border border-amber-700/60 bg-amber-950/30 px-3 py-2 text-sm text-amber-100">
+                Finish setup and try again.
+              </div>
+            ) : null}
+
+            <div className="mt-5 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                className="rounded-full bg-orange-300 px-5 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-orange-200 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                onClick={() => { void handleRunAgent(); }}
+                disabled={runInFlight}
+              >
+                {providerValidationError ? 'Save setup and run' : 'Run on this page'}
+              </button>
+              <button
+                type="button"
+                className="rounded-full border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-slate-100 transition hover:border-white/20 hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/5 disabled:text-slate-500"
+                onClick={handleCancelRun}
+                disabled={!runInFlight}
+              >
+                Stop
+              </button>
+              <button
+                type="button"
+                className="text-sm font-medium text-slate-400 transition hover:text-slate-200"
+                onClick={() => setShowAdvancedControls((current) => !current)}
+              >
+                {showAdvancedControls ? 'Hide advanced controls' : 'Show advanced controls'}
               </button>
             </div>
           </div>
         </section>
 
-        {showWelcome ? (
-          <section className="rounded-3xl border border-sky-900/60 bg-gradient-to-br from-sky-950/60 to-slate-950/80 p-4 shadow-xl shadow-slate-950/30">
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-sky-300">Quickstart</p>
-            <h2 className="mt-2 text-lg font-semibold text-slate-50">Use Fast Browser on the current tab</h2>
-            <p className="mt-2 text-sm text-slate-300">
-              Fast Browser works best on normal web pages with a short, concrete task. Start with an inspect pass, then let the agent act one step at a time.
-            </p>
-            <div className="mt-4 grid gap-3 md:grid-cols-3">
-              <div className="rounded-2xl border border-slate-800 bg-slate-950/50 p-3">
-                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">1. Open a site</div>
-                <p className="mt-2 text-sm text-slate-300">Use a regular `http` or `https` page, not `chrome://` or another browser-internal tab.</p>
-              </div>
-              <div className="rounded-2xl border border-slate-800 bg-slate-950/50 p-3">
-                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">2. Configure a model</div>
-                <p className="mt-2 text-sm text-slate-300">Ollama is the easiest local setup. Keys stay in session storage and are not persisted locally.</p>
-              </div>
-              <div className="rounded-2xl border border-slate-800 bg-slate-950/50 p-3">
-                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">3. Start small</div>
-                <p className="mt-2 text-sm text-slate-300">Try tasks like “click the search box” or “summarize the main calls to action” before harder multi-step flows.</p>
-              </div>
-            </div>
-            <div className="mt-4 flex flex-wrap gap-3">
-              <button
-                type="button"
-                className="rounded-full bg-sky-500 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-sky-400"
-                onClick={() => { void handleInspectPage(); }}
-              >
-                Inspect this page
-              </button>
-              <button
-                type="button"
-                className="rounded-full border border-slate-700 px-4 py-2 text-sm text-slate-200 transition hover:border-slate-500 hover:bg-slate-900"
-                onClick={() => { void handleGrantSiteAccess(); }}
-              >
-                Grant persistent site access
-              </button>
-            </div>
-          </section>
-        ) : null}
-
-        <section className="grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
-          <div className="rounded-3xl border border-slate-800 bg-slate-950/60 p-4">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">Action feed</h2>
-              <span className="text-xs text-slate-500">One run per Port, ordered by seq</span>
+        <section className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+          <div className="rounded-[28px] border border-white/10 bg-[linear-gradient(180deg,rgba(15,23,42,0.92),rgba(11,15,25,0.92))] p-4 shadow-[0_18px_40px_rgba(2,6,23,0.28)]">
+            <div className="mb-3">
+              <h2 className="text-sm font-semibold uppercase tracking-[0.22em] text-slate-200">Transcript</h2>
+              <p className="mt-1 text-xs text-slate-500">
+                Fast Browser narrates what it sees and does as the run progresses.
+              </p>
             </div>
             <ActionFeed entries={feed} />
           </div>
 
-          <div className="rounded-3xl border border-slate-800 bg-slate-950/60 p-4">
-            <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">Page snapshot</h2>
-            {pageState ? (
-              <div className="mt-3 space-y-4 text-sm text-slate-200">
-                <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-3">
-                  <div className="font-medium text-slate-50">{pageState.title || '(untitled page)'}</div>
-                  <div className="mt-1 break-all text-xs text-slate-400">{pageState.url}</div>
-                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-300">
-                    <div>Elements: {pageState.meta.elementCount}</div>
-                    <div>Forms: {pageState.meta.hasForm ? 'yes' : 'no'}</div>
-                    <div>Dialogs: {pageState.meta.hasDialog ? 'yes' : 'no'}</div>
-                    <div>Scroll: {pageState.meta.scrollPercent}%</div>
-                  </div>
-                </div>
-
+          <div className="space-y-4">
+            <section className="rounded-[28px] border border-white/10 bg-[linear-gradient(180deg,rgba(15,23,42,0.92),rgba(11,15,25,0.92))] p-4 shadow-[0_18px_40px_rgba(2,6,23,0.28)]">
+              <div className="flex items-center justify-between gap-3">
                 <div>
-                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
-                    Top interactive elements
-                  </h3>
-                  <div className="max-h-80 space-y-2 overflow-auto pr-1">
-                    {pageState.elements.map((element) => (
-                      <div
-                        key={element.ref}
-                        className="rounded-2xl border border-slate-800 bg-slate-900/70 px-3 py-2"
-                      >
-                        <div className="text-xs text-sky-300">{element.ref}</div>
-                        <div className="mt-1 font-medium text-slate-50">{element.name}</div>
-                        <div className="mt-1 text-xs text-slate-400">
-                          {element.tag} · {element.role}
-                          {element.type ? ` · ${element.type}` : ''}
-                          {element.state ? ` · ${element.state}` : ''}
-                          {element.inViewport ? ' · in viewport' : ' · off screen'}
+                  <h2 className="text-sm font-semibold uppercase tracking-[0.22em] text-slate-200">Current page</h2>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Refresh page context manually only if the page changed outside the agent run.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-100 transition hover:border-white/20 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => { void handleInspectPage(); }}
+                  disabled={runInFlight}
+                >
+                  Refresh page context
+                </button>
+              </div>
+
+              {pageState ? (
+                <div className="mt-4 space-y-4 text-sm text-slate-200">
+                  <div className="rounded-2xl border border-white/8 bg-white/5 p-3">
+                    <div className="font-medium text-white">{pageState.title || '(untitled page)'}</div>
+                    <div className="mt-1 break-all text-xs text-slate-400">{pageState.url}</div>
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-300">
+                      <div>Elements: {pageState.meta.elementCount}</div>
+                      <div>Forms: {pageState.meta.hasForm ? 'yes' : 'no'}</div>
+                      <div>Dialogs: {pageState.meta.hasDialog ? 'yes' : 'no'}</div>
+                      <div>Scroll: {pageState.meta.scrollPercent}%</div>
+                    </div>
+                  </div>
+
+                  <details className="rounded-2xl border border-white/8 bg-white/5 p-3" open>
+                    <summary className="cursor-pointer text-xs font-semibold uppercase tracking-[0.2em] text-slate-300">
+                      Interactive elements
+                    </summary>
+                    <div className="mt-3 max-h-72 space-y-2 overflow-auto pr-1">
+                      {pageState.elements.map((element) => (
+                        <div
+                          key={element.ref}
+                          className="rounded-2xl border border-white/8 bg-black/20 px-3 py-2"
+                        >
+                          <div className="text-xs text-orange-200">{element.ref}</div>
+                          <div className="mt-1 font-medium text-white">{element.name}</div>
+                          <div className="mt-1 text-xs text-slate-400">
+                            {element.tag} · {element.role}
+                            {element.type ? ` · ${element.type}` : ''}
+                            {element.state?.length ? ` · ${element.state.join(', ')}` : ''}
+                            {element.inViewport ? ' · in view' : ' · off screen'}
+                          </div>
+                          {element.context ? (
+                            <div className="mt-1 text-xs text-slate-500">Context: {element.context}</div>
+                          ) : null}
                         </div>
-                        {element.context ? (
-                          <div className="mt-1 text-xs text-slate-500">Context: {element.context}</div>
-                        ) : null}
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                      ))}
+                    </div>
+                  </details>
 
-                <div>
-                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
-                    Visible text preview
-                  </h3>
-                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-2xl border border-slate-800 bg-slate-900/70 p-3 text-xs text-slate-300">
-                    {pageState.visibleText || 'No visible text captured.'}
-                  </pre>
+                  <details className="rounded-2xl border border-white/8 bg-white/5 p-3">
+                    <summary className="cursor-pointer text-xs font-semibold uppercase tracking-[0.2em] text-slate-300">
+                      Visible text preview
+                    </summary>
+                    <pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap rounded-2xl border border-white/8 bg-black/20 p-3 text-xs text-slate-300">
+                      {pageState.visibleText || 'No visible text captured.'}
+                    </pre>
+                  </details>
                 </div>
-              </div>
-            ) : (
-              <div className="mt-3 rounded-2xl border border-dashed border-slate-700 bg-slate-900/50 p-4 text-sm text-slate-400">
-                No snapshot yet. Use the current tab and click “Inspect page.”
-              </div>
-            )}
+              ) : (
+                <div className="mt-4 rounded-2xl border border-dashed border-white/10 bg-white/5 p-4 text-sm text-slate-400">
+                  No page context yet. Run a task and Fast Browser will inspect the page automatically.
+                </div>
+              )}
+            </section>
+
+            {showAdvancedControls ? (
+              <section className="rounded-[28px] border border-white/10 bg-[linear-gradient(180deg,rgba(15,23,42,0.92),rgba(11,15,25,0.92))] p-4 shadow-[0_18px_40px_rgba(2,6,23,0.28)]">
+                <h2 className="text-sm font-semibold uppercase tracking-[0.22em] text-slate-200">Advanced controls</h2>
+                <div className="mt-4 space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="max-steps-input">
+                      Max steps
+                    </label>
+                    <input
+                      id="max-steps-input"
+                      type="number"
+                      min={1}
+                      max={20}
+                      className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 text-sm text-slate-50 outline-none focus:border-orange-300/60"
+                      value={Number.isFinite(maxSteps) ? maxSteps : ''}
+                      onChange={(event) => setMaxSteps(Number.parseInt(event.target.value, 10))}
+                      disabled={runInFlight}
+                    />
+                    <p className="mt-2 text-xs text-slate-500">Most tasks work well with 4 to 8 steps.</p>
+                    {validationAttempted && formErrors.maxSteps ? (
+                      <p className="mt-2 text-xs text-rose-300">{formErrors.maxSteps}</p>
+                    ) : null}
+                  </div>
+
+                  <div className="rounded-2xl border border-white/8 bg-white/5 px-4 py-3 text-sm text-slate-300">
+                    <div className="font-medium text-white">Current endpoint</div>
+                    <div className="mt-1 break-all text-xs text-slate-400">{currentEndpoint}</div>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="rounded-full border border-white/10 px-4 py-2 text-sm text-slate-100 transition hover:border-white/20 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={handleClearState}
+                    disabled={runInFlight}
+                  >
+                    Clear transcript and context
+                  </button>
+                </div>
+              </section>
+            ) : null}
           </div>
         </section>
       </div>

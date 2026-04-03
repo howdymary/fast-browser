@@ -82,12 +82,12 @@ describe('validateProviderSettings', () => {
 });
 
 describe('mergeProviderSettings', () => {
-  it('fills defaults when given a partial input', () => {
+  it('fills provider-specific defaults when given a partial input', () => {
     const merged = mergeProviderSettings({ provider: 'anthropic' });
     expect(merged.provider).toBe('anthropic');
-    expect(merged.model).toBe(DEFAULT_PROVIDER_SETTINGS.model);
-    expect(merged.apiKey).toBe(DEFAULT_PROVIDER_SETTINGS.apiKey);
-    expect(merged.baseUrl).toBe(DEFAULT_PROVIDER_SETTINGS.baseUrl);
+    expect(merged.model).toBe('claude-sonnet-4-20250514');
+    expect(merged.apiKey).toBe('');
+    expect(merged.baseUrl).toBe('https://api.anthropic.com/v1/messages');
   });
 
   it('preserves all values when given a full input', () => {
