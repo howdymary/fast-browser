@@ -66,7 +66,7 @@ describe('callLlm', () => {
     });
   });
 
-  it('returns OpenAI responses content and sends max_output_tokens', async () => {
+  it('returns OpenAI responses content and sends structured input with max_output_tokens', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: vi.fn().mockResolvedValue({
@@ -82,9 +82,11 @@ describe('callLlm', () => {
     const [, init] = fetchMock.mock.calls[0];
     expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({
       model: settings.model,
-      instructions: 'System prompt',
       max_output_tokens: 400,
-      input: [{ role: 'user', content: 'Hi' }],
+      input: [
+        { role: 'system', content: [{ type: 'input_text', text: 'System prompt' }] },
+        { role: 'user', content: [{ type: 'input_text', text: 'Hi' }] },
+      ],
     });
   });
 
@@ -176,12 +178,24 @@ describe('callLlm', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false,
       status: 404,
-      json: vi.fn().mockResolvedValue({}),
+      json: vi.fn().mockResolvedValue({ error: { message: 'No such endpoint' } }),
     }));
 
     await expect(
       callLlm('System prompt', [{ role: 'user', content: 'Hi' }], makeSettings('openai')),
     ).rejects.toThrow(/responses api endpoint/i);
+  });
+
+  it('surfaces OpenAI 400 body errors for invalid request payloads', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: vi.fn().mockResolvedValue({ error: { message: 'Invalid input structure' } }),
+    }));
+
+    await expect(
+      callLlm('System prompt', [{ role: 'user', content: 'Hi' }], makeSettings('openai')),
+    ).rejects.toThrow(/invalid input structure/i);
   });
 
   it('propagates timeout failures with a descriptive error', async () => {

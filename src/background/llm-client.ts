@@ -29,6 +29,25 @@ function httpErrorMessage(provider: ProviderSettings['provider'], status: number
   return `${provider}: Request failed (${status})`;
 }
 
+async function readErrorDetails(response: Response): Promise<string | null> {
+  const jsonSource = typeof response.clone === 'function' ? response.clone() : response;
+  try {
+    const data = await jsonSource.json() as {
+      error?: { message?: string };
+      message?: string;
+    };
+    return data.error?.message?.trim() || data.message?.trim() || null;
+  } catch {
+    const textSource = typeof response.clone === 'function' ? response.clone() : response;
+    try {
+      const text = typeof textSource.text === 'function' ? (await textSource.text()).trim() : '';
+      return text || null;
+    } catch {
+      return null;
+    }
+  }
+}
+
 function createTimeoutSignal(timeoutMs: number): {
   signal: AbortSignal;
   clear: () => void;
@@ -79,7 +98,9 @@ export async function callLlm(
       });
 
       if (!response.ok) {
-        throw new Error(httpErrorMessage(settings.provider, response.status));
+        const details = await readErrorDetails(response);
+        const base = httpErrorMessage(settings.provider, response.status);
+        throw new Error(details ? `${base}: ${details}` : base);
       }
 
       const data = await response.json() as {
@@ -105,7 +126,7 @@ export async function callLlm(
     const usesChatCompletions = settings.provider === 'ollama'
       || (settings.provider === 'openai' && isOpenAiChatCompletionsEndpoint(endpoint));
 
-    const response = await fetch(getProviderEndpoint(settings), {
+    const response = await fetch(endpoint, {
       method: 'POST',
       signal: combined,
       headers: {
@@ -125,18 +146,25 @@ export async function callLlm(
             }
           : {
               model: settings.model,
-              instructions: systemPrompt,
               max_output_tokens: 400,
-              input: messages.map((message) => ({
-                role: message.role,
-                content: message.content,
-              })),
+              input: [
+                {
+                  role: 'system',
+                  content: [{ type: 'input_text', text: systemPrompt }],
+                },
+                ...messages.map((message) => ({
+                  role: message.role,
+                  content: [{ type: 'input_text', text: message.content }],
+                })),
+              ],
             },
       ),
     });
 
     if (!response.ok) {
-      throw new Error(httpErrorMessage(settings.provider, response.status));
+      const details = await readErrorDetails(response);
+      const base = httpErrorMessage(settings.provider, response.status);
+      throw new Error(details ? `${base}: ${details}` : base);
     }
 
     const data = await response.json() as {
