@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_PROVIDER_SETTINGS,
   getProviderEndpoint,
+  getProviderPreset,
   mergeProviderSettings,
   providerNeedsApiKey,
   validateProviderSettings,
@@ -108,6 +109,21 @@ describe('mergeProviderSettings', () => {
 });
 
 describe('provider endpoint helpers', () => {
+  it('defaults first-run settings to the OpenAI path', () => {
+    expect(DEFAULT_PROVIDER_SETTINGS.provider).toBe('openai');
+    expect(DEFAULT_PROVIDER_SETTINGS.model).toBe('gpt-4.1-mini');
+    expect(DEFAULT_PROVIDER_SETTINGS.baseUrl).toBe('https://api.openai.com/v1/chat/completions');
+  });
+
+  it('returns provider presets for setup shortcuts', () => {
+    expect(getProviderPreset('anthropic')).toEqual({
+      provider: 'anthropic',
+      apiKey: '',
+      model: 'claude-sonnet-4-20250514',
+      baseUrl: 'https://api.anthropic.com/v1/messages',
+    });
+  });
+
   it('uses the provider defaults when no base URL is supplied', () => {
     expect(
       getProviderEndpoint({

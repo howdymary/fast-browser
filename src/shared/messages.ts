@@ -28,6 +28,10 @@ export interface ContentExtractRequest {
   task?: string;
 }
 
+export interface ContentPingRequest {
+  type: 'FAST_BROWSER_PING';
+}
+
 export interface ContentExtractResponse {
   ok: boolean;
   pageState?: PageState;
@@ -47,8 +51,8 @@ export interface ContentExecuteResponse {
 
 export type BackgroundMessage = InspectPageRequest;
 export type BackgroundResponse = AgentRunResult;
-export type ContentMessage = ContentExtractRequest | ContentExecuteRequest;
-export type ContentResponse = ContentExtractResponse | ContentExecuteResponse;
+export type ContentMessage = ContentPingRequest | ContentExtractRequest | ContentExecuteRequest;
+export type ContentResponse = { ok: boolean } | ContentExtractResponse | ContentExecuteResponse;
 
 export interface RunEventServerMessage {
   type: 'FAST_BROWSER_RUN_EVENT';

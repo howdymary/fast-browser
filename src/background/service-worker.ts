@@ -5,6 +5,7 @@ import type {
   ContentExecuteResponse,
   ContentExtractRequest,
   ContentExtractResponse,
+  ContentMessage,
   RunEventServerMessage,
   RunFinishServerMessage,
   RunPortClientMessage,
@@ -22,6 +23,8 @@ import {
 import type { ExecutableAction, NavigateAction, ProviderSettings, RunPhase } from '../shared/types';
 
 const RUNNER_PORT_NAME = 'fast-browser.run';
+const CONTENT_SCRIPT_READY_RETRIES = 8;
+const CONTENT_SCRIPT_READY_DELAY_MS = 75;
 
 function throwIfAborted(signal: AbortSignal): void {
   signal.throwIfAborted();
@@ -75,7 +78,48 @@ async function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-async function ensureActiveTabAccess(tabId: number): Promise<void> {
+function isMissingReceiverError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /receiving end does not exist/i.test(message);
+}
+
+async function pingContentScript(tabId: number): Promise<boolean> {
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, {
+      type: 'FAST_BROWSER_PING',
+    } satisfies ContentMessage) as { ok?: boolean };
+    return response?.ok === true;
+  } catch (error) {
+    if (isMissingReceiverError(error)) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function waitForContentScriptReady(tabId: number, signal?: AbortSignal): Promise<void> {
+  for (let attempt = 0; attempt < CONTENT_SCRIPT_READY_RETRIES; attempt += 1) {
+    if (signal) {
+      throwIfAborted(signal);
+    }
+
+    if (await pingContentScript(tabId)) {
+      return;
+    }
+
+    if (attempt < CONTENT_SCRIPT_READY_RETRIES - 1) {
+      if (signal) {
+        await abortableDelay(CONTENT_SCRIPT_READY_DELAY_MS, signal);
+      } else {
+        await new Promise((resolve) => globalThis.setTimeout(resolve, CONTENT_SCRIPT_READY_DELAY_MS));
+      }
+    }
+  }
+
+  throw new Error('Fast Browser could not connect to the page script. Reload the tab and try again.');
+}
+
+async function ensureActiveTabAccess(tabId: number, signal?: AbortSignal): Promise<void> {
   const tab = await chrome.tabs.get(tabId);
   if (!isSupportedTabUrl(tab.url)) {
     throw new Error('Fast Browser can only run on regular http(s) pages, not browser-internal tabs.');
@@ -86,6 +130,7 @@ async function ensureActiveTabAccess(tabId: number): Promise<void> {
       target: { tabId },
       files: [contentScriptFile],
     });
+    await waitForContentScriptReady(tabId, signal);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown injection error.';
     throw new Error(`Fast Browser could not access this page. Grant site access or reopen the side panel from the page you want to automate. (${message})`);
@@ -100,7 +145,7 @@ async function extractActivePageState(
   if (signal) {
     throwIfAborted(signal);
   }
-  await ensureActiveTabAccess(tabId);
+  await ensureActiveTabAccess(tabId, signal);
   if (signal) {
     throwIfAborted(signal);
   }
@@ -125,7 +170,7 @@ async function executeContentAction(
   signal: AbortSignal,
 ): Promise<void> {
   throwIfAborted(signal);
-  await ensureActiveTabAccess(tabId);
+  await ensureActiveTabAccess(tabId, signal);
   throwIfAborted(signal);
   const request: ContentExecuteRequest = {
     type: 'FAST_BROWSER_EXECUTE_ACTION',

@@ -42,6 +42,11 @@ if (!window.__FAST_BROWSER_CONTENT_SCRIPT_READY__) {
   window.__FAST_BROWSER_CONTENT_SCRIPT_READY__ = true;
 
   chrome.runtime.onMessage.addListener((message: ContentMessage, _sender, sendResponse) => {
+    if (message.type === 'FAST_BROWSER_PING') {
+      sendResponse({ ok: true });
+      return true;
+    }
+
     if (message.type === 'FAST_BROWSER_EXTRACT_PAGE_STATE') {
       try {
         sendResponse({
