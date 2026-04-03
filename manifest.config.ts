@@ -4,7 +4,7 @@ export default defineManifest({
   manifest_version: 3,
   name: 'Fast Browser',
   version: '0.2.0',
-  description: 'Open-source browser automation with natural language and DOM-native extraction.',
+  description: 'Open-source local browser automation with Ollama and DOM-native extraction.',
   permissions: ['activeTab', 'sidePanel', 'storage', 'tabs', 'scripting'],
   host_permissions: ['http://127.0.0.1/*', 'http://localhost/*'],
   optional_host_permissions: ['http://*/*', 'https://*/*'],

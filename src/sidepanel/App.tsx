@@ -223,6 +223,7 @@ export function App(): ReactElement {
   async function refreshInstalledModels(): Promise<void> {
     setInstalledModelsLoading(true);
     setInstalledModelsError(null);
+    setModelNotice(null);
 
     try {
       const models = await fetchInstalledModelOptions();
@@ -516,6 +517,7 @@ export function App(): ReactElement {
   }
 
   function handleModelSelection(value: string): void {
+    setModelNotice(null);
     updateSettings({ model: value });
   }
 
@@ -583,7 +585,7 @@ export function App(): ReactElement {
                 className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:border-white/20 hover:bg-white/10"
                 onClick={() => setShowSetup((current) => !current)}
               >
-                {showSetupCard ? 'Hide model setup' : 'Model setup'}
+                {showSetupCard ? 'Hide local setup' : 'Local setup'}
               </button>
             </div>
           </div>
@@ -601,7 +603,7 @@ export function App(): ReactElement {
             <div className="mt-4 rounded-[26px] border border-white/10 bg-black/20 p-4 backdrop-blur">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <h2 className="text-sm font-semibold text-white">Model setup</h2>
+                  <h2 className="text-sm font-semibold text-white">Local model setup</h2>
                   <p className="mt-1 max-w-lg text-sm text-slate-300">{providerHint()}</p>
                 </div>
                 <button
@@ -674,7 +676,10 @@ export function App(): ReactElement {
                     id="model-input"
                     className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 text-sm text-slate-50 outline-none focus:border-orange-300/60"
                     value={settings.model}
-                    onChange={(event) => updateSettings({ model: event.target.value })}
+                    onChange={(event) => {
+                      setModelNotice(null);
+                      updateSettings({ model: event.target.value });
+                    }}
                     placeholder="Example: llama3.2:3b"
                     disabled={runInFlight}
                   />

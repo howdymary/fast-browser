@@ -48,7 +48,7 @@ flowchart LR
     B --> C["Background Service Worker"]
     C --> D["Inject / Talk to Content Script"]
     D --> C
-    C --> E["Model Provider"]
+    C --> E["Local Ollama"]
     E --> C
     C --> B
     B --> A
@@ -106,7 +106,7 @@ ollama serve
 ollama pull llama3.2:3b
 ```
 
-Then reload the extension and choose `llama3.2:3b` in the side panel.
+Then reload the extension and choose `llama3.2:3b` in the side panel. Fast Browser detects installed local models from Ollama's tags endpoint and lets you type a model id manually if you want to use a different local model.
 
 If you change the endpoint manually, keep it on Ollama's OpenAI-compatible chat-completions path:
 
