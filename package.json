@@ -1,0 +1,47 @@
+{
+  "name": "fast-browser",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Open-source browser automation with a DOM-native Chrome extension.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/howdymary/fast-browser.git"
+  },
+  "keywords": [
+    "chrome-extension",
+    "browser-automation",
+    "react",
+    "vite"
+  ],
+  "author": "Mary",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/howdymary/fast-browser/issues"
+  },
+  "homepage": "https://github.com/howdymary/fast-browser#readme",
+  "dependencies": {
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "zustand": "^5.0.12"
+  },
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^2.4.0",
+    "@tailwindcss/vite": "^4.2.2",
+    "@types/chrome": "^0.1.39",
+    "@types/jsdom": "^28.0.1",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "jsdom": "^29.0.1",
+    "tailwindcss": "^4.2.2",
+    "typescript": "^6.0.2",
+    "vite": "^8.0.3",
+    "vitest": "^4.1.2"
+  }
+}
