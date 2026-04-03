@@ -97,4 +97,51 @@ describe('extractPageState', () => {
     const pageState = extractPageState(dom.window.document);
     expect(pageState.elements[0]?.value).toBe('[REDACTED]');
   });
+
+  it('excludes hidden elements with display: none', () => {
+    const dom = new JSDOM(`
+      <!doctype html>
+      <html>
+        <head><title>Hidden test</title></head>
+        <body>
+          <button style="display: none">Hidden button</button>
+          <button>Visible button</button>
+        </body>
+      </html>
+    `, { url: 'https://example.com/hidden' });
+
+    Object.defineProperty(dom.window, 'innerHeight', { value: 900, configurable: true });
+    Object.defineProperty(dom.window, 'innerWidth', { value: 1200, configurable: true });
+    stubRects(dom);
+    installDomGlobals(dom);
+
+    const pageState = extractPageState(dom.window.document);
+    expect(pageState.elements).toHaveLength(1);
+    expect(pageState.elements[0]?.name).toBe('Visible button');
+  });
+
+  it('returns a valid PageState with 0 elements for an empty page', () => {
+    const dom = new JSDOM(`
+      <!doctype html>
+      <html>
+        <head><title>Empty</title></head>
+        <body></body>
+      </html>
+    `, { url: 'https://example.com/empty' });
+
+    Object.defineProperty(dom.window, 'innerHeight', { value: 900, configurable: true });
+    Object.defineProperty(dom.window, 'innerWidth', { value: 1200, configurable: true });
+    installDomGlobals(dom);
+
+    const pageState = extractPageState(dom.window.document);
+    expect(pageState.elements).toHaveLength(0);
+    expect(pageState.meta.elementCount).toBe(0);
+    expect(pageState.title).toBe('Empty');
+    expect(pageState.url).toBe('https://example.com/empty');
+    expect(pageState.snapshotId).toBeTypeOf('string');
+    expect(pageState.meta).toHaveProperty('hasForm');
+    expect(pageState.meta).toHaveProperty('hasDialog');
+    expect(pageState.meta).toHaveProperty('scrollPercent');
+    expect(pageState.meta).toHaveProperty('loadingState');
+  });
 });

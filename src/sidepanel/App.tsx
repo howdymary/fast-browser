@@ -8,6 +8,7 @@ import type {
   RunPortServerMessage,
 } from '../shared/messages';
 import type { RunPhase } from '../shared/types';
+import { validateProviderSettings } from '../shared/settings';
 import { ActionFeed } from './components/ActionFeed';
 import { useAgentStore } from './stores/agent-store';
 import { useSettingsStore } from './stores/settings-store';
@@ -174,6 +175,12 @@ export function App(): ReactElement {
   }
 
   async function handleRunAgent(): Promise<void> {
+    const validationError = validateProviderSettings(settings);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
     await saveSettings();
 
     const runId = crypto.randomUUID();
@@ -192,8 +199,11 @@ export function App(): ReactElement {
 
     function handleDisconnect(): void {
       if (currentRunIdRef.current === runId) {
-        setPhase('error');
-        setError('The live run connection closed unexpectedly.');
+        const p = phaseRef.current;
+        if (p !== null && p !== 'error') {
+          setPhase('error');
+          setError('Connection lost. Try running again.');
+        }
         cleanupRunnerPort();
       }
     }

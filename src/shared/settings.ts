@@ -40,8 +40,16 @@ export function validateProviderSettings(settings: ProviderSettings): string | n
     return `An API key is required for ${settings.provider}.`;
   }
 
-  if (settings.provider === 'ollama' && !getProviderEndpoint(settings)) {
+  if (settings.provider === 'ollama' && !settings.baseUrl?.trim()) {
     return 'Set an Ollama endpoint before running the agent.';
+  }
+
+  if (settings.baseUrl?.trim()) {
+    try {
+      new URL(settings.baseUrl);
+    } catch {
+      return 'Base URL is not a valid URL.';
+    }
   }
 
   return null;

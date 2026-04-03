@@ -89,6 +89,10 @@ async function emitEvent(
   }
 }
 
+function sanitizeForPrompt(text: string): string {
+  return text.replace(/[{}\[\]]/g, (ch) => `\\${ch}`).replace(/```/g, '\\`\\`\\`');
+}
+
 function formatPageState(pageState: PageState): string {
   const lines = pageState.elements.map((element) => {
     const details = [
@@ -96,19 +100,23 @@ function formatPageState(pageState: PageState): string {
       element.role,
       element.type,
       element.state?.join(','),
-      element.context,
+      element.context ? sanitizeForPrompt(element.context) : undefined,
       element.inViewport ? 'in viewport' : 'off screen',
       element.sensitive ? 'sensitive' : undefined,
     ].filter(Boolean).join(' · ');
 
-    return `${element.ref} | ${element.name} | ${details}`;
+    const name = element.name ? sanitizeForPrompt(element.name) : '';
+    const value = element.value ? sanitizeForPrompt(element.value) : undefined;
+    const valueSuffix = value ? ` = ${value}` : '';
+
+    return `${element.ref} | ${name}${valueSuffix} | ${details}`;
   });
 
   return [
     `URL: ${pageState.url}`,
     `Title: ${pageState.title}`,
     `Snapshot: ${pageState.snapshotId}`,
-    `Visible text:\n${pageState.visibleText || '(none)'}`,
+    `Visible text:\n${sanitizeForPrompt(pageState.visibleText || '(none)')}`,
     'Interactive elements:',
     lines.join('\n') || '(none)',
   ].join('\n\n');
@@ -124,7 +132,18 @@ function formatHistory(history: AgentAction[]): string {
 function parseAgentAction(raw: string): AgentAction {
   const trimmed = raw.trim();
   const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]+?)\s*```/i);
-  const candidate = fencedMatch?.[1] ?? trimmed;
+  let candidate = fencedMatch?.[1] ?? trimmed;
+
+  // Extract the first JSON object even if surrounded by extra text
+  const firstBrace = candidate.indexOf('{');
+  const lastBrace = candidate.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    candidate = candidate.slice(firstBrace, lastBrace + 1);
+  }
+
+  // Strip trailing commas before closing braces (common LLM mistake)
+  candidate = candidate.replace(/,\s*}/g, '}');
+
   const parsed = JSON.parse(candidate) as Partial<AgentAction>;
   if (!parsed || typeof parsed !== 'object' || typeof parsed.action !== 'string') {
     throw new Error('The model did not return a valid action.');
@@ -265,7 +284,26 @@ export async function runAgentLoop(
       );
       throwIfAborted(deps.signal);
 
-      const action = parseAgentAction(rawAction);
+      let action: AgentAction;
+      try {
+        action = parseAgentAction(rawAction);
+      } catch (parseError) {
+        const message = parseError instanceof Error ? parseError.message : 'Failed to parse model response.';
+        const errorEntry = makeFeedEntry(message, 'error');
+        feed.push(errorEntry);
+        await emitEvent(deps, {
+          step,
+          phase: 'error',
+          entry: errorEntry,
+          pageState: currentPage,
+        });
+        return {
+          ok: false,
+          pageState: currentPage,
+          feed,
+          error: message,
+        };
+      }
       history.push(action);
       const plannedActionEntry = makeFeedEntry(`Model chose ${action.action}: ${action.reason}`);
       feed.push(plannedActionEntry);

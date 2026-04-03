@@ -21,6 +21,9 @@ export default defineManifest({
   side_panel: {
     default_path: 'sidepanel.html',
   },
+  content_security_policy: {
+    extension_pages: "script-src 'self'; object-src 'none';",
+  },
   action: {
     default_title: 'Fast Browser',
   },

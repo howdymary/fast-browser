@@ -244,6 +244,7 @@ chrome.runtime.onConnect.addListener((port) => {
           {
             task: message.task,
             settings: settings ?? DEFAULT_PROVIDER_SETTINGS,
+            maxSteps: message.maxSteps,
           },
           {
             signal: controller.signal,

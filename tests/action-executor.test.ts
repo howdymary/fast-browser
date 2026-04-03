@@ -13,6 +13,7 @@ function installDomGlobals(dom: JSDOM): void {
     HTMLTextAreaElement: dom.window.HTMLTextAreaElement,
     Event: dom.window.Event,
     InputEvent: dom.window.InputEvent,
+    MouseEvent: dom.window.MouseEvent,
   });
 
   if (!dom.window.HTMLElement.prototype.scrollIntoView) {

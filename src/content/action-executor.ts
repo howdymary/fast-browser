@@ -38,7 +38,7 @@ function executeClick(action: ClickAction, snapshot: SnapshotCache): void {
   }
   element.scrollIntoView({ block: 'center', inline: 'center' });
   element.focus();
-  element.click();
+  element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
 }
 
 function executeType(action: TypeAction, snapshot: SnapshotCache): void {
@@ -67,9 +67,14 @@ function executeType(action: TypeAction, snapshot: SnapshotCache): void {
   throw new Error('Target element does not support typing.');
 }
 
-function executeScroll(action: ScrollAction): void {
+async function executeScroll(action: ScrollAction): Promise<void> {
+  const scrollYBefore = window.scrollY;
   const delta = action.direction === 'down' ? window.innerHeight * 0.8 : -window.innerHeight * 0.8;
   window.scrollBy({ top: delta, behavior: 'auto' });
+  await new Promise((resolve) => window.setTimeout(resolve, 50));
+  if (window.scrollY === scrollYBefore) {
+    throw new Error('Scroll had no effect');
+  }
 }
 
 async function executeWait(action: WaitAction): Promise<void> {
@@ -91,7 +96,7 @@ export async function executeAction(
       executeType(action, currentSnapshot);
       return;
     case 'scroll':
-      executeScroll(action);
+      await executeScroll(action);
       return;
     case 'wait':
       await executeWait(action);

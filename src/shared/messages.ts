@@ -15,6 +15,7 @@ export interface RunStartClientMessage {
   type: 'FAST_BROWSER_RUN_START';
   runId: string;
   task: string;
+  maxSteps?: number;
 }
 
 export interface RunCancelClientMessage {

@@ -33,7 +33,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   setCurrentRunId: (currentRunId) => set({ currentRunId }),
   setLastSeq: (lastSeq) => set({ lastSeq }),
   setPageState: (pageState) => set({ pageState }),
-  appendFeed: (entries) => set((state) => ({ feed: [...state.feed, ...entries] })),
+  appendFeed: (entries) => set((state) => ({ feed: [...state.feed, ...entries].slice(-200) })),
   setError: (error) => set({ error }),
   resetFeed: () => set({ feed: [] }),
 }));

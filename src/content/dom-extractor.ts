@@ -18,8 +18,8 @@ const INTERACTIVE_SELECTOR = [
   '[onclick]',
 ].join(',');
 
-const MAX_VISIBLE_TEXT_CHARS = 1500;
-const MAX_INTERACTIVE_ELEMENTS = 40;
+const MAX_VISIBLE_TEXT_CHARS = 2500;
+const MAX_INTERACTIVE_ELEMENTS = 60;
 export const FAST_BROWSER_REF_ATTR = 'data-fast-browser-ref';
 
 function clearPriorRefs(rootDocument: Document): void {

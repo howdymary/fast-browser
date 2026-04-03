@@ -176,4 +176,46 @@ describe('runAgentLoop', () => {
     expect(result.error).toMatch(/cancelled/i);
     expect(phases).toEqual([]);
   });
+
+  it('produces an error when the model returns invalid (non-JSON) text', async () => {
+    const page = makePageState();
+
+    const result = await runAgentLoop(
+      {
+        task: 'Click the search button',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi.fn().mockResolvedValue(page),
+        executeAction: vi.fn(),
+        navigate: vi.fn(),
+        callModel: vi.fn().mockResolvedValue('I am not sure what to do next.'),
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBeDefined();
+  });
+
+  it('produces an error when the model returns an unknown action type', async () => {
+    const page = makePageState();
+
+    const result = await runAgentLoop(
+      {
+        task: 'Click the search button',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi.fn().mockResolvedValue(page),
+        executeAction: vi.fn(),
+        navigate: vi.fn(),
+        callModel: vi.fn().mockResolvedValue('{"action":"fly","destination":"moon","reason":"Testing"}'),
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/unsupported|malformed/i);
+  });
 });

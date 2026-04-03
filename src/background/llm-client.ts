@@ -6,16 +6,27 @@ export interface LlmMessage {
   content: string;
 }
 
+function httpErrorMessage(status: number): string {
+  if (status === 401) return 'Invalid API key';
+  if (status === 429) return 'Rate limited — wait and retry';
+  if (status >= 500) return `Server error (${status})`;
+  return `Request failed (${status})`;
+}
+
 export async function callLlm(
   systemPrompt: string,
   messages: LlmMessage[],
   settings: ProviderSettings,
   signal?: AbortSignal,
 ): Promise<string> {
+  const timeoutMs = 30_000;
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+
   if (settings.provider === 'anthropic') {
     const response = await fetch(getProviderEndpoint(settings), {
       method: 'POST',
-      signal,
+      signal: combined,
       headers: {
         'content-type': 'application/json',
         'x-api-key': settings.apiKey,
@@ -30,7 +41,7 @@ export async function callLlm(
     });
 
     if (!response.ok) {
-      throw new Error(`Anthropic error ${response.status}: ${await response.text()}`);
+      throw new Error(httpErrorMessage(response.status));
     }
 
     const data = await response.json() as {
@@ -45,7 +56,7 @@ export async function callLlm(
 
   const response = await fetch(getProviderEndpoint(settings), {
     method: 'POST',
-    signal,
+    signal: combined,
     headers: {
       'content-type': 'application/json',
       ...(settings.provider === 'ollama' ? {} : { authorization: `Bearer ${settings.apiKey}` }),
@@ -53,6 +64,7 @@ export async function callLlm(
     body: JSON.stringify({
       model: settings.model,
       temperature: 0,
+      max_tokens: 400,
       messages: [
         { role: 'system', content: systemPrompt },
         ...messages,
@@ -61,7 +73,7 @@ export async function callLlm(
   });
 
   if (!response.ok) {
-    throw new Error(`${settings.provider} error ${response.status}: ${await response.text()}`);
+    throw new Error(httpErrorMessage(response.status));
   }
 
   const data = await response.json() as {
