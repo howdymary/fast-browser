@@ -80,6 +80,14 @@ describe('callLlm', () => {
     ).rejects.toThrow(/server error/i);
   });
 
+  it('surfaces fetch failures with a local Ollama help message', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+
+    await expect(
+      callLlm('System prompt', [{ role: 'user', content: 'Hi' }], makeSettings()),
+    ).rejects.toThrow(/could not reach the local ollama server/i);
+  });
+
   it('propagates timeout failures with a descriptive error', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new DOMException('Request timed out', 'TimeoutError')));
 

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DEFAULT_PROVIDER_SETTINGS,
@@ -6,131 +6,139 @@ import {
   getProviderEndpoint,
   getSuggestedModelOptions,
   mergeProviderSettings,
-  OLLAMA_DEFAULT_ENDPOINT,
   validateProviderSettings,
 } from '../src/shared/settings';
 import type { ProviderSettings } from '../src/shared/types';
 
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
 describe('validateProviderSettings', () => {
-  it('returns null for valid Ollama settings', () => {
+  it('accepts valid Ollama settings', () => {
     const settings: ProviderSettings = {
       provider: 'ollama',
       model: 'llama3.2:3b',
-      baseUrl: OLLAMA_DEFAULT_ENDPOINT,
+      baseUrl: 'http://127.0.0.1:11434/v1/chat/completions',
     };
+
     expect(validateProviderSettings(settings)).toBeNull();
   });
 
-  it('returns an error for an empty model name', () => {
-    const settings: ProviderSettings = {
+  it('rejects an empty model name', () => {
+    const result = validateProviderSettings({
       provider: 'ollama',
       model: '   ',
-      baseUrl: OLLAMA_DEFAULT_ENDPOINT,
-    };
-    expect(validateProviderSettings(settings)).toMatch(/model/i);
+      baseUrl: 'http://127.0.0.1:11434/v1/chat/completions',
+    });
+
+    expect(result).toMatch(/model/i);
   });
 
-  it('returns an error for Ollama with no endpoint', () => {
-    const settings: ProviderSettings = {
+  it('rejects a missing Ollama endpoint', () => {
+    const result = validateProviderSettings({
       provider: 'ollama',
       model: 'llama3.2:3b',
       baseUrl: '',
-    };
-    expect(validateProviderSettings(settings)).toMatch(/endpoint/i);
+    });
+
+    expect(result).toMatch(/endpoint/i);
   });
 
-  it('returns an error for a malformed base URL', () => {
-    const settings: ProviderSettings = {
+  it('rejects a malformed endpoint', () => {
+    const result = validateProviderSettings({
       provider: 'ollama',
       model: 'llama3.2:3b',
       baseUrl: 'not-a-url',
-    };
-    expect(validateProviderSettings(settings)).toMatch(/valid url/i);
+    });
+
+    expect(result).toMatch(/valid url/i);
   });
 });
 
 describe('mergeProviderSettings', () => {
-  it('fills Ollama defaults when given a partial input', () => {
-    const merged = mergeProviderSettings({ model: 'qwen2.5:3b' });
-    expect(merged.provider).toBe('ollama');
-    expect(merged.model).toBe('qwen2.5:3b');
-    expect(merged.baseUrl).toBe(OLLAMA_DEFAULT_ENDPOINT);
-  });
-
-  it('preserves all valid values when given a full input', () => {
-    const full: ProviderSettings = {
-      provider: 'ollama',
-      model: 'qwen2.5:7b',
-      baseUrl: 'http://localhost:11434/v1/chat/completions',
-    };
-    expect(mergeProviderSettings(full)).toEqual(full);
-  });
-
-  it('returns defaults when given undefined', () => {
+  it('returns Ollama defaults when given undefined', () => {
     expect(mergeProviderSettings(undefined)).toEqual(DEFAULT_PROVIDER_SETTINGS);
   });
 
-  it('migrates old saved provider data back to Ollama defaults', () => {
-    const merged = mergeProviderSettings({
-      provider: 'openai',
-      apiKey: 'sk-test',
-      model: 'llama3.2:3b',
-      baseUrl: '',
+  it('preserves local Ollama settings', () => {
+    expect(
+      mergeProviderSettings({
+        provider: 'ollama',
+        model: 'qwen2.5:7b',
+        baseUrl: 'http://localhost:11434/v1/chat/completions',
+      }),
+    ).toEqual({
+      provider: 'ollama',
+      model: 'qwen2.5:7b',
+      baseUrl: 'http://localhost:11434/v1/chat/completions',
     });
+  });
 
-    expect(merged.provider).toBe('ollama');
-    expect(merged.baseUrl).toBe(OLLAMA_DEFAULT_ENDPOINT);
+  it('migrates old remote-provider settings to the local Ollama defaults', () => {
+    expect(
+      mergeProviderSettings({
+        provider: 'openai',
+        apiKey: 'sk-test',
+        model: 'gpt-4o',
+        baseUrl: 'https://api.openai.com/v1/responses',
+      }),
+    ).toEqual(DEFAULT_PROVIDER_SETTINGS);
   });
 });
 
-describe('Ollama helper functions', () => {
-  it('defaults first-run settings to the local Ollama path', () => {
+describe('Ollama helpers', () => {
+  it('defaults first-run settings to Ollama', () => {
     expect(DEFAULT_PROVIDER_SETTINGS).toEqual({
       provider: 'ollama',
       model: 'llama3.2:3b',
-      baseUrl: OLLAMA_DEFAULT_ENDPOINT,
+      baseUrl: 'http://127.0.0.1:11434/v1/chat/completions',
     });
   });
 
-  it('returns suggested free model options', () => {
-    const models = getSuggestedModelOptions();
-    expect(models.some((option) => option.value === 'llama3.2:3b')).toBe(true);
-    expect(models.some((option) => option.value === 'qwen2.5:7b')).toBe(true);
-  });
-
-  it('uses the default Ollama endpoint when none is supplied', () => {
+  it('returns the default endpoint when none is supplied', () => {
     expect(
       getProviderEndpoint({
         provider: 'ollama',
         model: 'llama3.2:3b',
       }),
-    ).toBe(OLLAMA_DEFAULT_ENDPOINT);
+    ).toBe('http://127.0.0.1:11434/v1/chat/completions');
   });
 
-  it('reads installed models from the Ollama tags endpoint', async () => {
+  it('returns the suggested free-model catalog', () => {
+    const suggested = getSuggestedModelOptions();
+    expect(suggested.some((option) => option.value === 'llama3.2:3b')).toBe(true);
+    expect(suggested.some((option) => option.value === 'qwen2.5:3b')).toBe(true);
+  });
+});
+
+describe('fetchInstalledModelOptions', () => {
+  it('returns sorted unique installed models from the Ollama tags endpoint', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: vi.fn().mockResolvedValue({
         models: [
+          { name: 'qwen2.5:3b' },
           { name: 'llama3.2:3b' },
-          { name: 'qwopus-q4km-quiet:latest' },
+          { name: 'llama3.2:3b' },
         ],
       }),
     });
 
-    const result = await fetchInstalledModelOptions(fetchMock);
+    const models = await fetchInstalledModelOptions(fetchMock);
 
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(result.map((item) => item.value)).toEqual([
-      'llama3.2:3b',
-      'qwopus-q4km-quiet:latest',
-    ]);
+    expect(models.map((model) => model.value)).toEqual(['llama3.2:3b', 'qwen2.5:3b']);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:11434/api/tags',
+      expect.objectContaining({ method: 'GET' }),
+    );
   });
 
-  it('throws a helpful error when Ollama is unreachable', async () => {
+  it('throws a useful error when Ollama is unreachable', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: false,
-      status: 500,
+      status: 503,
     });
 
     await expect(fetchInstalledModelOptions(fetchMock)).rejects.toThrow(/could not reach ollama/i);

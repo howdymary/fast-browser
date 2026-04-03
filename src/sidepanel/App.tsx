@@ -8,6 +8,7 @@ import type {
   RunPortServerMessage,
 } from '../shared/messages';
 import {
+  DEFAULT_PROVIDER_SETTINGS,
   getProviderEndpoint,
   fetchInstalledModelOptions,
   getSuggestedModelOptions,
@@ -281,6 +282,20 @@ export function App(): ReactElement {
     () => modelOptions.some((option) => option.value === settings.model.trim()),
     [modelOptions, settings.model],
   );
+  const preferredInstalledModel = useMemo(() => {
+    const installedNames = new Set(modelOptions.map((option) => option.value));
+    if (installedNames.has(DEFAULT_PROVIDER_SETTINGS.model)) {
+      return DEFAULT_PROVIDER_SETTINGS.model;
+    }
+
+    for (const option of suggestedModels) {
+      if (installedNames.has(option.value)) {
+        return option.value;
+      }
+    }
+
+    return modelOptions[0]?.value ?? null;
+  }, [modelOptions, suggestedModels]);
   const providerValidationError = useMemo(
     () => validateProviderSettings(settings),
     [settings],
@@ -306,7 +321,7 @@ export function App(): ReactElement {
     initialModelSelectionRef.current = true;
 
     if (!currentModelInstalled) {
-      const fallbackModel = modelOptions[0]?.value;
+      const fallbackModel = preferredInstalledModel;
       if (!fallbackModel) {
         return;
       }
@@ -320,7 +335,7 @@ export function App(): ReactElement {
         );
       }
     }
-  }, [currentModelInstalled, installedModelsLoading, modelOptions, settings.model, updateSettings]);
+  }, [currentModelInstalled, installedModelsLoading, preferredInstalledModel, settings.model, updateSettings]);
 
   function cleanupRunnerPort(options?: { disconnect?: boolean }): void {
     currentRunIdRef.current = null;
@@ -608,29 +623,44 @@ export function App(): ReactElement {
 
               <div className="mt-4 grid gap-3 md:grid-cols-2">
                 <div>
-                  <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="model-select">
-                    Installed models
-                  </label>
-                  <select
-                    id="model-select"
-                    className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 text-sm text-slate-50 outline-none focus:border-orange-300/60"
-                    value={selectedModelOption ? selectedModelOption.value : '__custom__'}
-                    onChange={(event) => handleModelSelection(event.target.value)}
-                    disabled={runInFlight}
-                  >
-                    {modelOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                    <option value="__custom__">Custom model…</option>
-                  </select>
+                  <div className="flex items-center justify-between gap-3">
+                    <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="model-select">
+                      Installed models
+                    </label>
+                    <button
+                      type="button"
+                      className="rounded-full border border-white/10 px-3 py-1.5 text-xs text-slate-300 transition hover:border-white/20 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={() => { void refreshInstalledModels(); }}
+                      disabled={runInFlight || installedModelsLoading}
+                    >
+                      {installedModelsLoading ? 'Refreshing…' : 'Refresh models'}
+                    </button>
+                  </div>
+                  {modelOptions.length > 0 ? (
+                    <select
+                      id="model-select"
+                      className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 text-sm text-slate-50 outline-none focus:border-orange-300/60"
+                      value={currentModelInstalled ? settings.model : (preferredInstalledModel ?? modelOptions[0]?.value)}
+                      onChange={(event) => handleModelSelection(event.target.value)}
+                      disabled={runInFlight}
+                    >
+                      {modelOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="mt-2 rounded-2xl border border-dashed border-white/10 bg-slate-950/60 px-3 py-3 text-sm text-slate-400">
+                      {installedModelsLoading ? 'Checking local Ollama models…' : 'No local Ollama models detected yet.'}
+                    </div>
+                  )}
                   <p className="mt-2 text-xs text-slate-500">
-                    {selectedModelOption?.helper ?? 'Type any installed local model name if it is not in the list.'}
+                    {selectedModelOption?.helper ?? 'Type a local model ID below if you want to use a model that is not in the detected list yet.'}
                   </p>
-                  {installedModelsLoading ? (
-                    <p className="mt-2 text-xs text-slate-500">Checking local Ollama models…</p>
-                  ) : null}
+                  <p className="mt-2 text-xs text-slate-500">
+                    {installedModelStatusLabel(modelOptions, installedModelsLoading)}
+                  </p>
                   {installedModelsError ? (
                     <p className="mt-2 text-xs text-amber-200">{installedModelsError}</p>
                   ) : null}
@@ -644,12 +674,15 @@ export function App(): ReactElement {
                     id="model-input"
                     className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 text-sm text-slate-50 outline-none focus:border-orange-300/60"
                     value={settings.model}
-                    onChange={(event) => {
-                      updateSettings({ model: event.target.value });
-                    }}
-                    placeholder="Enter or edit a model name"
+                    onChange={(event) => updateSettings({ model: event.target.value })}
+                    placeholder="Example: llama3.2:3b"
                     disabled={runInFlight}
                   />
+                  {!currentModelInstalled && settings.model.trim() && modelOptions.length > 0 ? (
+                    <p className="mt-2 text-xs text-amber-200">
+                      "{settings.model}" is not detected locally. Install it with <code className="rounded bg-white/5 px-1 py-0.5 text-[11px]">{formatSuggestedInstallCommand(settings.model)}</code> or switch to one of the detected models above.
+                    </p>
+                  ) : null}
                   {validationAttempted && formErrors.model ? (
                     <p className="mt-2 text-xs text-rose-300">{formErrors.model}</p>
                   ) : null}
@@ -659,8 +692,11 @@ export function App(): ReactElement {
                   <ol className="mt-2 list-decimal space-y-2 pl-4 text-sm text-slate-300">
                     <li>Start Ollama with <code className="rounded bg-white/5 px-1 py-0.5 text-xs">ollama serve</code>.</li>
                     <li>Install a model if needed, for example <code className="rounded bg-white/5 px-1 py-0.5 text-xs">ollama pull llama3.2:3b</code>.</li>
-                    <li>Reload this panel and run a prompt on the current page.</li>
+                    <li>Click refresh above if you just installed a model, then run a prompt on the current page.</li>
                   </ol>
+                  <div className="mt-4 rounded-2xl border border-white/8 bg-black/20 px-3 py-3 text-xs text-slate-400">
+                    Recommended free models to install next: {suggestedModelNames}.
+                  </div>
                 </div>
               </div>
 
@@ -701,7 +737,7 @@ export function App(): ReactElement {
                   onClick={() => { void handleSaveSetup(); }}
                   disabled={runInFlight}
                 >
-                  Save setup
+                  Save local setup
                 </button>
                 <span className="self-center text-xs text-slate-500">
                   Current endpoint: {currentEndpoint}

@@ -3,6 +3,7 @@ import type { ProviderSettings } from './types';
 export const PROVIDER_SETTINGS_STORAGE_KEY = 'fast-browser-provider-settings';
 export const OLLAMA_DEFAULT_ENDPOINT = 'http://127.0.0.1:11434/v1/chat/completions';
 const OLLAMA_TAGS_ENDPOINT = 'http://127.0.0.1:11434/api/tags';
+const OLLAMA_CHAT_COMPLETIONS_PATH_RE = /\/v1\/chat\/completions\/?$/i;
 
 export interface ProviderModelOption {
   value: string;
@@ -53,6 +54,28 @@ export const DEFAULT_PROVIDER_SETTINGS: ProviderSettings = {
   baseUrl: OLLAMA_DEFAULT_ENDPOINT,
 };
 
+function normalizeStoredModel(model: string | undefined): string {
+  const trimmed = model?.trim();
+  if (!trimmed) {
+    return DEFAULT_PROVIDER_SETTINGS.model;
+  }
+  if (/^(gpt-|claude)/i.test(trimmed)) {
+    return DEFAULT_PROVIDER_SETTINGS.model;
+  }
+  return trimmed;
+}
+
+function normalizeStoredBaseUrl(baseUrl: string | undefined): string {
+  const trimmed = baseUrl?.trim();
+  if (!trimmed) {
+    return OLLAMA_DEFAULT_ENDPOINT;
+  }
+  if (/api\.openai\.com|api\.anthropic\.com/i.test(trimmed)) {
+    return OLLAMA_DEFAULT_ENDPOINT;
+  }
+  return trimmed;
+}
+
 function prettifyModelName(model: string): string {
   const helper = OLLAMA_MODEL_HELPERS[model];
   if (helper) {
@@ -75,8 +98,8 @@ export function mergeProviderSettings(
 ): ProviderSettings {
   return {
     ...DEFAULT_PROVIDER_SETTINGS,
-    model: value?.model?.trim() || DEFAULT_PROVIDER_SETTINGS.model,
-    baseUrl: value?.baseUrl?.trim() || DEFAULT_PROVIDER_SETTINGS.baseUrl,
+    model: normalizeStoredModel(value?.model),
+    baseUrl: normalizeStoredBaseUrl(value?.baseUrl),
     provider: 'ollama',
   };
 }
@@ -131,6 +154,9 @@ export function validateProviderSettings(settings: ProviderSettings): string | n
     const url = new URL(trimmedBaseUrl);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       return 'Ollama endpoint must use http or https.';
+    }
+    if (!OLLAMA_CHAT_COMPLETIONS_PATH_RE.test(url.pathname)) {
+      return 'Ollama endpoint must end with /v1/chat/completions.';
     }
   } catch {
     return 'Ollama endpoint is not a valid URL.';

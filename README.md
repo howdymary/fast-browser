@@ -108,6 +108,12 @@ ollama pull llama3.2:3b
 
 Then reload the extension and choose `llama3.2:3b` in the side panel.
 
+If you change the endpoint manually, keep it on Ollama's OpenAI-compatible chat-completions path:
+
+```text
+http://127.0.0.1:11434/v1/chat/completions
+```
+
 If you want a different free local model later, install it first and then type or select it in the model setup:
 
 ```bash
