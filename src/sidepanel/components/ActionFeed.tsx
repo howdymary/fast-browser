@@ -21,7 +21,7 @@ export function ActionFeed({ entries }: ActionFeedProps): ReactElement {
   if (visibleEntries.length === 0) {
     return (
       <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-950/40 p-4 text-sm text-slate-400">
-        No agent actions yet. Start with “Inspect page” to prove the extension wiring works.
+        No run activity yet. Start with “Inspect page” to capture the current tab, then run a short task.
       </div>
     );
   }

@@ -2,6 +2,8 @@
 
 Fast Browser is an open-source Chrome extension for natural-language browser automation.
 
+This repo is now packaged as an alpha-quality extension, not just a code prototype. You can build it, load it into Chrome, and use it on the active tab today.
+
 This repo is intentionally starting small. The current scaffold now proves the core extension plumbing and the first real agent loop:
 
 - Manifest V3 extension with a side panel
@@ -11,6 +13,14 @@ This repo is intentionally starting small. The current scaffold now proves the c
 - React side panel for task entry and provider settings
 - first observe → plan → act → verify loop against the active tab
 - live step-by-step updates streamed to the side panel over a dedicated per-run extension Port
+- runtime site access model shaped for a real alpha extension
+- extension icon set and release packaging flow
+
+Related docs:
+
+- [Privacy Policy](./PRIVACY.md)
+- [Security Policy](./SECURITY.md)
+- [Release Guide](./RELEASING.md)
 
 ## Architecture
 
@@ -31,6 +41,18 @@ The current DAG is a single-run observe → plan → act → verify loop. Each r
 5. The worker validates the action, executes a safe browser operation, and streams the result back to the panel.
 6. The content script re-extracts the page so stale refs expire immediately.
 7. The loop repeats until the task is done, blocked, cancelled, or the step budget is exhausted.
+
+```mermaid
+flowchart LR
+    A["Side Panel"] --> B["Run Port"]
+    B --> C["Background Service Worker"]
+    C --> D["Inject / Talk to Content Script"]
+    D --> C
+    C --> E["Model Provider"]
+    E --> C
+    C --> B
+    B --> A
+```
 
 ## Current scope
 
@@ -70,6 +92,7 @@ Each run now uses its own Port session, server events carry monotonically increa
 - The action surface is intentionally small so the worker can reject anything outside the safe set.
 - Sensitive fields are detected in the content script and type actions against them are blocked.
 - Cross-origin navigation requires explicit human approval before the worker will proceed.
+- API access to sites is shaped around the active tab plus optional runtime-granted site access, instead of a permanently broad install-time permission model.
 - Prompt injection defenses are still a work in progress, so the current build is not suitable for high-risk autonomous browsing without more hardening.
 
 ## Multi-provider support
@@ -94,7 +117,7 @@ What is still intentionally missing:
 
 ## Known Limitations
 
-- `<all_urls>` host permissions are still used in the scaffold, so the extension is broader than a production deployment should be.
+- The extension is now set up for runtime site access, but the active-tab + per-site permission model still needs more real-world testing across sites.
 - The DOM extractor currently ignores iframes and shadow DOM.
 - Page snapshots are intentionally capped at 60 interactive elements and 2500 visible-text characters.
 - The current action set is intentionally narrow and does not yet cover form controls beyond typing into the active target.
@@ -127,6 +150,14 @@ npm run dev
 ```
 
 Then load the built extension in Chrome from `dist/`.
+
+## Package For Chrome
+
+```bash
+npm run package:extension
+```
+
+That produces `fast-browser-extension.zip` for release testing or store submission prep.
 
 ## Build
 

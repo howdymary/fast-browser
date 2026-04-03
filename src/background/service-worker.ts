@@ -9,6 +9,7 @@ import type {
   RunFinishServerMessage,
   RunPortClientMessage,
 } from '../shared/messages';
+import contentScriptFile from '../content/content-script.ts?script';
 import { callLlm } from './llm-client';
 import { makeFeedEntry, runAgentLoop } from './agent-loop';
 import {
@@ -26,12 +27,20 @@ function throwIfAborted(signal: AbortSignal): void {
   signal.throwIfAborted();
 }
 
-async function getActiveTabId(): Promise<number> {
+function isSupportedTabUrl(url: string | undefined): boolean {
+  return typeof url === 'string' && /^https?:\/\//i.test(url);
+}
+
+async function getActiveTab(): Promise<chrome.tabs.Tab> {
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!activeTab?.id) {
     throw new Error('No active tab is available.');
   }
-  return activeTab.id;
+  return activeTab;
+}
+
+async function getActiveTabId(): Promise<number> {
+  return (await getActiveTab()).id as number;
 }
 
 async function loadProviderSettings(): Promise<ProviderSettings> {
@@ -66,11 +75,32 @@ async function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+async function ensureActiveTabAccess(tabId: number): Promise<void> {
+  const tab = await chrome.tabs.get(tabId);
+  if (!isSupportedTabUrl(tab.url)) {
+    throw new Error('Fast Browser can only run on regular http(s) pages, not browser-internal tabs.');
+  }
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: [contentScriptFile],
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown injection error.';
+    throw new Error(`Fast Browser could not access this page. Grant site access or reopen the side panel from the page you want to automate. (${message})`);
+  }
+}
+
 async function extractActivePageState(
   tabId: number,
   task: string | undefined,
   signal?: AbortSignal,
 ) {
+  if (signal) {
+    throwIfAborted(signal);
+  }
+  await ensureActiveTabAccess(tabId);
   if (signal) {
     throwIfAborted(signal);
   }
@@ -94,6 +124,8 @@ async function executeContentAction(
   snapshotId: string,
   signal: AbortSignal,
 ): Promise<void> {
+  throwIfAborted(signal);
+  await ensureActiveTabAccess(tabId);
   throwIfAborted(signal);
   const request: ContentExecuteRequest = {
     type: 'FAST_BROWSER_EXECUTE_ACTION',

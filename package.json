@@ -1,13 +1,14 @@
 {
   "name": "fast-browser",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Open-source browser automation with a DOM-native Chrome extension.",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "package:extension": "npm run build && rm -f fast-browser-extension.zip && cd dist && zip -qr ../fast-browser-extension.zip ."
   },
   "repository": {
     "type": "git",
