@@ -31,3 +31,10 @@ export function isSensitiveElement(element: Element): boolean {
   return SENSITIVE_NAME_PATTERNS.some((pattern) => pattern.test(haystack));
 }
 
+export function sanitizePromptText(text: string, maxLength = 1500): string {
+  const trimmed = text.trim();
+  const escaped = trimmed
+    .replace(/```/g, '\\`\\`\\`')
+    .replace(/[<>{}\[\]]/g, (ch) => `\\${ch}`);
+  return escaped.slice(0, maxLength);
+}

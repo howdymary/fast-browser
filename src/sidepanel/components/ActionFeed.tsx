@@ -9,12 +9,16 @@ const toneClasses: Record<ActionFeedEntry['kind'], string> = {
   error: 'border-rose-700/70 bg-rose-950/40 text-rose-200',
 };
 
+const MAX_VISIBLE_ENTRIES = 200;
+
 interface ActionFeedProps {
   entries: ActionFeedEntry[];
 }
 
 export function ActionFeed({ entries }: ActionFeedProps): ReactElement {
-  if (entries.length === 0) {
+  const visibleEntries = entries.slice(-MAX_VISIBLE_ENTRIES);
+
+  if (visibleEntries.length === 0) {
     return (
       <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-950/40 p-4 text-sm text-slate-400">
         No agent actions yet. Start with “Inspect page” to prove the extension wiring works.
@@ -24,7 +28,7 @@ export function ActionFeed({ entries }: ActionFeedProps): ReactElement {
 
   return (
     <div className="space-y-3">
-      {entries.map((entry) => (
+      {visibleEntries.map((entry) => (
         <div
           key={entry.id}
           className={`rounded-2xl border px-3 py-2 text-sm shadow-sm ${toneClasses[entry.kind]}`}

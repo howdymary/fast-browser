@@ -30,6 +30,22 @@ function ensureActionableElement(element: HTMLElement): void {
   }
 }
 
+function setNativeValue(element: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+  const prototype = Object.getPrototypeOf(element) as {
+    value?: string;
+  };
+  const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value')
+    ?? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')
+    ?? Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+
+  if (descriptor?.set) {
+    descriptor.set.call(element, value);
+    return;
+  }
+
+  element.value = value;
+}
+
 function executeClick(action: ClickAction, snapshot: SnapshotCache): void {
   const element = getElementByRef(action.ref, snapshot);
   ensureActionableElement(element);
@@ -38,6 +54,8 @@ function executeClick(action: ClickAction, snapshot: SnapshotCache): void {
   }
   element.scrollIntoView({ block: 'center', inline: 'center' });
   element.focus();
+  element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+  element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
   element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
 }
 
@@ -51,8 +69,18 @@ function executeType(action: TypeAction, snapshot: SnapshotCache): void {
 
   if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
     element.focus();
-    element.value = action.text;
-    element.dispatchEvent(new Event('input', { bubbles: true }));
+    if (typeof element.select === 'function') {
+      element.select();
+    }
+    setNativeValue(element, '');
+    for (const char of action.text) {
+      setNativeValue(element, `${element.value}${char}`);
+      element.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        data: char,
+        inputType: 'insertText',
+      }));
+    }
     element.dispatchEvent(new Event('change', { bubbles: true }));
     return;
   }
@@ -60,7 +88,11 @@ function executeType(action: TypeAction, snapshot: SnapshotCache): void {
   if (element.isContentEditable) {
     element.focus();
     element.textContent = action.text;
-    element.dispatchEvent(new InputEvent('input', { bubbles: true, data: action.text }));
+    element.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      data: action.text,
+      inputType: 'insertText',
+    }));
     return;
   }
 
@@ -68,12 +100,15 @@ function executeType(action: TypeAction, snapshot: SnapshotCache): void {
 }
 
 async function executeScroll(action: ScrollAction): Promise<void> {
+  const scrollingElement = document.scrollingElement ?? document.documentElement;
+  const scrollTopBefore = scrollingElement.scrollTop;
   const scrollYBefore = window.scrollY;
   const delta = action.direction === 'down' ? window.innerHeight * 0.8 : -window.innerHeight * 0.8;
+  scrollingElement.scrollTop += delta;
   window.scrollBy({ top: delta, behavior: 'auto' });
   await new Promise((resolve) => window.setTimeout(resolve, 50));
-  if (window.scrollY === scrollYBefore) {
-    throw new Error('Scroll had no effect');
+  if (scrollingElement.scrollTop === scrollTopBefore && window.scrollY === scrollYBefore) {
+    throw new Error(`Scroll ${action.direction} had no effect.`);
   }
 }
 

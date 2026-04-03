@@ -1,6 +1,7 @@
 import type { ProviderSettings } from './types';
 
 export const PROVIDER_SETTINGS_STORAGE_KEY = 'fast-browser-provider-settings';
+export const PROVIDER_API_KEY_STORAGE_KEY = 'fast-browser-provider-api-key';
 
 export const DEFAULT_PROVIDER_SETTINGS: ProviderSettings = {
   provider: 'ollama',
@@ -44,9 +45,13 @@ export function validateProviderSettings(settings: ProviderSettings): string | n
     return 'Set an Ollama endpoint before running the agent.';
   }
 
-  if (settings.baseUrl?.trim()) {
+  const trimmedBaseUrl = settings.baseUrl?.trim();
+  if (trimmedBaseUrl) {
     try {
-      new URL(settings.baseUrl);
+      const url = new URL(trimmedBaseUrl);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+        return 'Base URL must use http or https.';
+      }
     } catch {
       return 'Base URL is not a valid URL.';
     }

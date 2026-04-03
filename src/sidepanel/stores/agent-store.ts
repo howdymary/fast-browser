@@ -2,6 +2,8 @@ import { create } from 'zustand';
 
 import type { ActionFeedEntry, PageState, RunPhase } from '../../shared/types';
 
+const MAX_FEED_ENTRIES = 200;
+
 interface AgentStoreState {
   task: string;
   phase: RunPhase | null;
@@ -33,7 +35,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   setCurrentRunId: (currentRunId) => set({ currentRunId }),
   setLastSeq: (lastSeq) => set({ lastSeq }),
   setPageState: (pageState) => set({ pageState }),
-  appendFeed: (entries) => set((state) => ({ feed: [...state.feed, ...entries].slice(-200) })),
+  appendFeed: (entries) => set((state) => ({ feed: [...state.feed, ...entries].slice(-MAX_FEED_ENTRIES) })),
   setError: (error) => set({ error }),
   resetFeed: () => set({ feed: [] }),
 }));

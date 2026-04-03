@@ -120,6 +120,33 @@ describe('extractPageState', () => {
     expect(pageState.elements[0]?.name).toBe('Visible button');
   });
 
+  it('excludes aria-hidden elements and preserves aria-label names', () => {
+    const dom = new JSDOM(`
+      <!doctype html>
+      <html>
+        <body>
+          <form>
+            <h2>Checkout</h2>
+            <button aria-hidden="true">Hidden action</button>
+            <button aria-label="Submit order"></button>
+          </form>
+        </body>
+      </html>
+    `, { url: 'https://example.com/checkout' });
+
+    Object.defineProperty(dom.window, 'innerHeight', { value: 900, configurable: true });
+    Object.defineProperty(dom.window, 'innerWidth', { value: 1200, configurable: true });
+    stubRects(dom);
+    installDomGlobals(dom);
+
+    const pageState = extractPageState(dom.window.document);
+
+    expect(pageState.meta.hasForm).toBe(true);
+    expect(pageState.elements).toHaveLength(1);
+    expect(pageState.elements[0]?.name).toBe('Submit order');
+    expect(pageState.elements[0]?.context).toBe('Checkout');
+  });
+
   it('returns a valid PageState with 0 elements for an empty page', () => {
     const dom = new JSDOM(`
       <!doctype html>
@@ -143,5 +170,28 @@ describe('extractPageState', () => {
     expect(pageState.meta).toHaveProperty('hasDialog');
     expect(pageState.meta).toHaveProperty('scrollPercent');
     expect(pageState.meta).toHaveProperty('loadingState');
+  });
+
+  it('truncates interactive elements to 60 entries', () => {
+    const buttons = Array.from({ length: 61 }, (_, index) => `<button>Action ${index + 1}</button>`).join('');
+    const dom = new JSDOM(`
+      <!doctype html>
+      <html>
+        <body>
+          ${buttons}
+        </body>
+      </html>
+    `, { url: 'https://example.com/many' });
+
+    Object.defineProperty(dom.window, 'innerHeight', { value: 900, configurable: true });
+    Object.defineProperty(dom.window, 'innerWidth', { value: 1200, configurable: true });
+    stubRects(dom);
+    installDomGlobals(dom);
+
+    const pageState = extractPageState(dom.window.document);
+
+    expect(pageState.elements).toHaveLength(60);
+    expect(pageState.elements[0]?.name).toBe('Action 1');
+    expect(pageState.elements[59]?.name).toBe('Action 60');
   });
 });

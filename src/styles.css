@@ -19,6 +19,16 @@ body {
     linear-gradient(180deg, #0f172a 0%, #111827 100%);
 }
 
+.fast-browser-spinner {
+  animation: fast-browser-spin 0.9s linear infinite;
+}
+
+@keyframes fast-browser-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 button,
 input,
 select,
@@ -26,3 +36,17 @@ textarea {
   font: inherit;
 }
 
+.fast-browser-spinner {
+  display: inline-block;
+  animation: fast-browser-spin 0.8s linear infinite;
+}
+
+@keyframes fast-browser-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}

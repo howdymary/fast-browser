@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type ReactElement } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 
 import type {
   BackgroundResponse,
@@ -7,11 +7,57 @@ import type {
   RunPortClientMessage,
   RunPortServerMessage,
 } from '../shared/messages';
-import type { RunPhase } from '../shared/types';
+import type { ProviderSettings, RunPhase } from '../shared/types';
 import { validateProviderSettings } from '../shared/settings';
 import { ActionFeed } from './components/ActionFeed';
 import { useAgentStore } from './stores/agent-store';
 import { useSettingsStore } from './stores/settings-store';
+
+interface FormErrors {
+  task?: string;
+  model?: string;
+  endpoint?: string;
+  apiKey?: string;
+  maxSteps?: string;
+}
+
+function validateRunForm(
+  task: string,
+  maxSteps: number,
+  settings: ProviderSettings,
+): FormErrors {
+  const errors: FormErrors = {};
+
+  if (!task.trim()) {
+    errors.task = 'Enter a task before running the agent.';
+  }
+
+  if (!/^[a-zA-Z0-9._:/-]{1,128}$/.test(settings.model.trim())) {
+    errors.model = 'Use only letters, numbers, . _ : / and - in the model name.';
+  }
+
+  if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 20) {
+    errors.maxSteps = 'Choose a whole number between 1 and 20.';
+  }
+
+  if (settings.provider === 'ollama') {
+    if (!settings.baseUrl?.trim()) {
+      errors.endpoint = 'Set an Ollama endpoint before running.';
+    }
+  } else if (settings.baseUrl?.trim()) {
+    try {
+      new URL(settings.baseUrl);
+    } catch {
+      errors.endpoint = 'Base URL must be a valid URL.';
+    }
+  }
+
+  if (settings.provider !== 'ollama' && !settings.apiKey.trim()) {
+    errors.apiKey = `An API key is required for ${settings.provider}.`;
+  }
+
+  return errors;
+}
 
 function statusLabelForPhase(phase: RunPhase | null): string {
   switch (phase) {
@@ -57,11 +103,14 @@ export function App(): ReactElement {
     load: loadSettings,
     save: saveSettings,
   } = useSettingsStore();
+  const [maxSteps, setMaxSteps] = useState(6);
+  const [validationAttempted, setValidationAttempted] = useState(false);
 
   const runnerPortRef = useRef<chrome.runtime.Port | null>(null);
   const currentRunIdRef = useRef<string | null>(null);
   const lastSeqRef = useRef(0);
   const phaseRef = useRef<RunPhase | null>(null);
+  const disconnectSuppressedRef = useRef(false);
 
   useEffect(() => {
     phaseRef.current = phase;
@@ -81,6 +130,7 @@ export function App(): ReactElement {
           runId: currentRunIdRef.current,
         };
         runnerPortRef.current.postMessage(cancelMessage);
+        disconnectSuppressedRef.current = true;
         runnerPortRef.current.disconnect();
       }
       runnerPortRef.current = null;
@@ -91,15 +141,21 @@ export function App(): ReactElement {
 
   const statusLabel = useMemo(() => statusLabelForPhase(phase), [phase]);
   const runInFlight = currentRunId !== null;
+  const formErrors = useMemo<FormErrors>(
+    () => (validationAttempted ? validateRunForm(task, maxSteps, settings) : {}),
+    [maxSteps, settings, task, validationAttempted],
+  );
+  const hasValidationErrors = Object.keys(formErrors).length > 0;
 
-  function cleanupRunnerPort(): void {
+  function cleanupRunnerPort(options?: { disconnect?: boolean }): void {
     currentRunIdRef.current = null;
     lastSeqRef.current = 0;
     setCurrentRunId(null);
     setLastSeq(0);
     const port = runnerPortRef.current;
     runnerPortRef.current = null;
-    if (port) {
+    if (port && options?.disconnect !== false) {
+      disconnectSuppressedRef.current = true;
       port.disconnect();
     }
   }
@@ -175,9 +231,12 @@ export function App(): ReactElement {
   }
 
   async function handleRunAgent(): Promise<void> {
+    setValidationAttempted(true);
+
     const validationError = validateProviderSettings(settings);
-    if (validationError) {
-      setError(validationError);
+    const nextFormErrors = validateRunForm(task, maxSteps, settings);
+    if (validationError || Object.keys(nextFormErrors).length > 0) {
+      setError(validationError ?? 'Fix the highlighted fields before running.');
       return;
     }
 
@@ -198,14 +257,16 @@ export function App(): ReactElement {
     setPageState(null);
 
     function handleDisconnect(): void {
-      if (currentRunIdRef.current === runId) {
-        const p = phaseRef.current;
-        if (p !== null && p !== 'error') {
-          setPhase('error');
-          setError('Connection lost. Try running again.');
-        }
-        cleanupRunnerPort();
+      if (disconnectSuppressedRef.current) {
+        disconnectSuppressedRef.current = false;
+        return;
       }
+
+      if (currentRunIdRef.current === runId) {
+        setPhase('error');
+        setError('The background worker disconnected. Reopen the side panel and run the task again.');
+      }
+      cleanupRunnerPort({ disconnect: false });
     }
 
     port.onMessage.addListener(handleRunServerMessage);
@@ -215,6 +276,7 @@ export function App(): ReactElement {
       type: 'FAST_BROWSER_RUN_START',
       runId,
       task: task.trim(),
+      maxSteps,
     };
     port.postMessage(startMessage);
   }
@@ -245,7 +307,10 @@ export function App(): ReactElement {
                 {currentRunId ? `Run ${currentRunId.slice(0, 8)} · seq ${lastSeq}` : 'No active run'}
               </p>
             </div>
-            <div className="rounded-full border border-slate-700 bg-slate-900/70 px-3 py-1 text-xs text-slate-300">
+            <div className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/70 px-3 py-1 text-xs text-slate-300">
+              {phase === 'plan' ? (
+                <span className="fast-browser-spinner h-2.5 w-2.5 rounded-full border border-sky-300 border-t-transparent" aria-hidden="true" />
+              ) : null}
               {statusLabel}
             </div>
           </div>
@@ -260,6 +325,9 @@ export function App(): ReactElement {
             value={task}
             onChange={(event) => setTask(event.target.value)}
           />
+          {validationAttempted && formErrors.task ? (
+            <p className="mt-2 text-xs text-rose-300">{formErrors.task}</p>
+          ) : null}
 
           <div className="mt-4 flex flex-wrap gap-3">
             <button
@@ -274,7 +342,7 @@ export function App(): ReactElement {
               type="button"
               className="rounded-full bg-emerald-400 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
               onClick={() => { void handleRunAgent(); }}
-              disabled={!task.trim() || runInFlight}
+              disabled={runInFlight}
             >
               Run agent
             </button>
@@ -294,6 +362,7 @@ export function App(): ReactElement {
                 setError(null);
                 resetFeed();
                 setPhase(null);
+                setValidationAttempted(false);
                 cleanupRunnerPort();
               }}
               disabled={runInFlight}
@@ -332,6 +401,9 @@ export function App(): ReactElement {
                 placeholder="llama3.2 or gpt-4.1-mini"
                 disabled={runInFlight}
               />
+              {validationAttempted && formErrors.model ? (
+                <p className="mt-2 text-xs text-rose-300">{formErrors.model}</p>
+              ) : null}
             </div>
 
             <div className="md:col-span-2">
@@ -346,6 +418,9 @@ export function App(): ReactElement {
                 placeholder="http://127.0.0.1:11434/v1/chat/completions"
                 disabled={runInFlight}
               />
+              {validationAttempted && formErrors.endpoint ? (
+                <p className="mt-2 text-xs text-rose-300">{formErrors.endpoint}</p>
+              ) : null}
             </div>
 
             <div className="md:col-span-2">
@@ -361,12 +436,40 @@ export function App(): ReactElement {
                 placeholder={settings.provider === 'ollama' ? 'Optional for local Ollama' : 'Required for this provider'}
                 disabled={runInFlight}
               />
+              {validationAttempted && formErrors.apiKey ? (
+                <p className="mt-2 text-xs text-rose-300">{formErrors.apiKey}</p>
+              ) : null}
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="max-steps-input">
+                Max steps
+              </label>
+              <input
+                id="max-steps-input"
+                type="number"
+                min={1}
+                max={20}
+                className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-50"
+                value={Number.isFinite(maxSteps) ? maxSteps : ''}
+                onChange={(event) => setMaxSteps(Number.parseInt(event.target.value, 10))}
+                disabled={runInFlight}
+              />
+              <p className="mt-1 text-xs text-slate-500">Use 1 to 20 steps per run.</p>
+              {validationAttempted && formErrors.maxSteps ? (
+                <p className="mt-2 text-xs text-rose-300">{formErrors.maxSteps}</p>
+              ) : null}
             </div>
           </div>
 
           {error ? (
             <div className="mt-4 rounded-2xl border border-rose-700/70 bg-rose-950/40 px-3 py-2 text-sm text-rose-200">
               {error}
+            </div>
+          ) : null}
+          {validationAttempted && hasValidationErrors ? (
+            <div className="mt-3 rounded-2xl border border-amber-700/70 bg-amber-950/30 px-3 py-2 text-sm text-amber-200">
+              Fix the highlighted fields before starting a run.
             </div>
           ) : null}
         </section>

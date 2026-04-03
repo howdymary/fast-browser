@@ -12,6 +12,7 @@ import type {
 import { callLlm } from './llm-client';
 import { makeFeedEntry, runAgentLoop } from './agent-loop';
 import {
+  PROVIDER_API_KEY_STORAGE_KEY,
   DEFAULT_PROVIDER_SETTINGS,
   mergeProviderSettings,
   PROVIDER_SETTINGS_STORAGE_KEY,
@@ -34,8 +35,18 @@ async function getActiveTabId(): Promise<number> {
 }
 
 async function loadProviderSettings(): Promise<ProviderSettings> {
-  const stored = await chrome.storage.local.get(PROVIDER_SETTINGS_STORAGE_KEY);
-  return mergeProviderSettings(stored[PROVIDER_SETTINGS_STORAGE_KEY] as Partial<ProviderSettings> | undefined);
+  const [stored, sessionStored] = await Promise.all([
+    chrome.storage.local.get(PROVIDER_SETTINGS_STORAGE_KEY),
+    chrome.storage.session.get(PROVIDER_API_KEY_STORAGE_KEY),
+  ]);
+  const persisted = stored[PROVIDER_SETTINGS_STORAGE_KEY] as Partial<ProviderSettings> | undefined;
+  const sessionApiKey = sessionStored[PROVIDER_API_KEY_STORAGE_KEY];
+  return mergeProviderSettings({
+    ...persisted,
+    apiKey: typeof sessionApiKey === 'string'
+      ? sessionApiKey
+      : (typeof persisted?.apiKey === 'string' ? persisted.apiKey : ''),
+  });
 }
 
 async function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
@@ -240,11 +251,15 @@ chrome.runtime.onConnect.addListener((port) => {
           return;
         }
 
+        const maxSteps = typeof message.maxSteps === 'number' && Number.isFinite(message.maxSteps)
+          ? Math.max(1, Math.min(20, Math.floor(message.maxSteps)))
+          : undefined;
+
         const result = await runAgentLoop(
           {
-            task: message.task,
+            task: message.task.trim(),
             settings: settings ?? DEFAULT_PROVIDER_SETTINGS,
-            maxSteps: message.maxSteps,
+            maxSteps,
           },
           {
             signal: controller.signal,

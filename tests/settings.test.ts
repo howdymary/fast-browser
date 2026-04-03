@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_PROVIDER_SETTINGS,
+  getProviderEndpoint,
   mergeProviderSettings,
+  providerNeedsApiKey,
   validateProviderSettings,
 } from '../src/shared/settings';
 import type { ProviderSettings } from '../src/shared/types';
@@ -65,6 +67,18 @@ describe('validateProviderSettings', () => {
     expect(result).toBeTypeOf('string');
     expect(result).toMatch(/endpoint/i);
   });
+
+  it('returns an error for a malformed base URL', () => {
+    const settings: ProviderSettings = {
+      provider: 'anthropic',
+      apiKey: 'anthropic-key',
+      model: 'claude-sonnet-4-20250514',
+      baseUrl: 'not-a-url',
+    };
+    const result = validateProviderSettings(settings);
+    expect(result).toBeTypeOf('string');
+    expect(result).toMatch(/valid url/i);
+  });
 });
 
 describe('mergeProviderSettings', () => {
@@ -90,5 +104,47 @@ describe('mergeProviderSettings', () => {
   it('returns defaults when given undefined', () => {
     const merged = mergeProviderSettings(undefined);
     expect(merged).toEqual(DEFAULT_PROVIDER_SETTINGS);
+  });
+});
+
+describe('provider endpoint helpers', () => {
+  it('uses the provider defaults when no base URL is supplied', () => {
+    expect(
+      getProviderEndpoint({
+        provider: 'anthropic',
+        apiKey: 'anthropic-key',
+        model: 'claude-sonnet-4-20250514',
+      }),
+    ).toBe('https://api.anthropic.com/v1/messages');
+
+    expect(
+      getProviderEndpoint({
+        provider: 'openai',
+        apiKey: 'openai-key',
+        model: 'gpt-4o',
+      }),
+    ).toBe('https://api.openai.com/v1/chat/completions');
+
+    expect(
+      getProviderEndpoint({
+        provider: 'ollama',
+        apiKey: '',
+        model: 'llama3.2',
+      }),
+    ).toBe('http://127.0.0.1:11434/v1/chat/completions');
+  });
+
+  it('reports which providers require an API key', () => {
+    expect(providerNeedsApiKey({
+      provider: 'ollama',
+      apiKey: '',
+      model: 'llama3.2',
+    })).toBe(false);
+
+    expect(providerNeedsApiKey({
+      provider: 'anthropic',
+      apiKey: 'anthropic-key',
+      model: 'claude-sonnet-4-20250514',
+    })).toBe(true);
   });
 });

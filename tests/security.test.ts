@@ -59,6 +59,12 @@ describe('isSensitiveElement', () => {
     expect(isSensitiveElement(input)).toBe(true);
   });
 
+  it('returns true for autocomplete="password"', () => {
+    const dom = makeDom();
+    const input = createElement(dom, 'input', { autocomplete: 'password' });
+    expect(isSensitiveElement(input)).toBe(true);
+  });
+
   it('returns false for name="username"', () => {
     const dom = makeDom();
     const input = createElement(dom, 'input', { name: 'username' });

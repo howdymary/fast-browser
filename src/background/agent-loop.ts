@@ -1,4 +1,5 @@
 import type { LlmMessage } from './llm-client';
+import { sanitizePromptText } from '../shared/security';
 import type {
   ActionFeedEntry,
   AgentAction,
@@ -89,34 +90,33 @@ async function emitEvent(
   }
 }
 
-function sanitizeForPrompt(text: string): string {
-  return text.replace(/[{}\[\]]/g, (ch) => `\\${ch}`).replace(/```/g, '\\`\\`\\`');
-}
-
 function formatPageState(pageState: PageState): string {
+  const sanitize = sanitizePromptText;
+
   const lines = pageState.elements.map((element) => {
     const details = [
-      element.tag,
-      element.role,
-      element.type,
-      element.state?.join(','),
-      element.context ? sanitizeForPrompt(element.context) : undefined,
+      sanitize(element.ref),
+      sanitize(element.tag),
+      sanitize(element.role),
+      element.type ? sanitize(element.type) : undefined,
+      element.state?.length ? sanitize(element.state.join(',')) : undefined,
+      element.context ? sanitize(element.context) : undefined,
       element.inViewport ? 'in viewport' : 'off screen',
       element.sensitive ? 'sensitive' : undefined,
     ].filter(Boolean).join(' · ');
 
-    const name = element.name ? sanitizeForPrompt(element.name) : '';
-    const value = element.value ? sanitizeForPrompt(element.value) : undefined;
+    const name = element.name ? sanitize(element.name) : '';
+    const value = element.value ? sanitize(element.value) : undefined;
     const valueSuffix = value ? ` = ${value}` : '';
 
-    return `${element.ref} | ${name}${valueSuffix} | ${details}`;
+    return `${sanitize(element.ref)} | ${name}${valueSuffix} | ${details}`;
   });
 
   return [
-    `URL: ${pageState.url}`,
-    `Title: ${pageState.title}`,
-    `Snapshot: ${pageState.snapshotId}`,
-    `Visible text:\n${sanitizeForPrompt(pageState.visibleText || '(none)')}`,
+    `URL: ${sanitize(pageState.url)}`,
+    `Title: ${sanitize(pageState.title)}`,
+    `Snapshot: ${sanitize(pageState.snapshotId)}`,
+    `Visible text:\n${sanitize(pageState.visibleText || '(none)')}`,
     'Interactive elements:',
     lines.join('\n') || '(none)',
   ].join('\n\n');
@@ -129,24 +129,75 @@ function formatHistory(history: AgentAction[]): string {
   return history.map((action, index) => `${index + 1}. ${JSON.stringify(action)}`).join('\n');
 }
 
-function parseAgentAction(raw: string): AgentAction {
-  const trimmed = raw.trim();
+function extractJsonCandidate(raw: string): string {
+  const trimmed = raw.trim().replace(/^\uFEFF/, '');
   const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]+?)\s*```/i);
   let candidate = fencedMatch?.[1] ?? trimmed;
 
-  // Extract the first JSON object even if surrounded by extra text
-  const firstBrace = candidate.indexOf('{');
-  const lastBrace = candidate.lastIndexOf('}');
-  if (firstBrace !== -1 && lastBrace > firstBrace) {
-    candidate = candidate.slice(firstBrace, lastBrace + 1);
+  const firstTokenIndex = candidate.search(/[\[{]/);
+  if (firstTokenIndex > 0) {
+    candidate = candidate.slice(firstTokenIndex);
   }
 
-  // Strip trailing commas before closing braces (common LLM mistake)
-  candidate = candidate.replace(/,\s*}/g, '}');
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let endIndex = -1;
 
-  const parsed = JSON.parse(candidate) as Partial<AgentAction>;
+  for (let index = 0; index < candidate.length; index += 1) {
+    const char = candidate[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (char === '{' || char === '[') {
+      depth += 1;
+      continue;
+    }
+
+    if (char === '}' || char === ']') {
+      depth -= 1;
+      if (depth === 0) {
+        endIndex = index;
+        break;
+      }
+    }
+  }
+
+  if (endIndex !== -1) {
+    candidate = candidate.slice(0, endIndex + 1);
+  }
+
+  candidate = candidate.replace(/,\s*([}\]])/g, '$1');
+  return candidate.trim();
+}
+
+function parseAgentAction(raw: string): AgentAction {
+  let parsedValue: unknown;
+  const candidate = extractJsonCandidate(raw);
+
+  try {
+    parsedValue = JSON.parse(candidate);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown JSON parse error';
+    throw new Error(`Invalid JSON from model: ${message}. Raw response: ${raw.slice(0, 200)}`);
+  }
+
+  const parsed = parsedValue as Partial<AgentAction>;
   if (!parsed || typeof parsed !== 'object' || typeof parsed.action !== 'string') {
-    throw new Error('The model did not return a valid action.');
+    throw new Error(`The model did not return a valid action: ${raw.slice(0, 120)}`);
   }
 
   switch (parsed.action) {
@@ -222,6 +273,78 @@ function requiresHumanApproval(action: AgentAction, pageState: PageState): strin
   return null;
 }
 
+function getElementSignature(element: PageState['elements'][number] | undefined): string {
+  if (!element) {
+    return 'missing';
+  }
+  return JSON.stringify({
+    tag: element.tag,
+    role: element.role,
+    name: element.name,
+    type: element.type,
+    state: element.state ?? [],
+    value: element.value ?? '',
+    visible: element.inViewport,
+  });
+}
+
+function findComparableElement(
+  pageState: PageState,
+  target: PageState['elements'][number] | undefined,
+): PageState['elements'][number] | undefined {
+  if (!target) {
+    return undefined;
+  }
+
+  return pageState.elements.find((element) => (
+    element.tag === target.tag
+    && element.role === target.role
+    && element.name === target.name
+    && element.context === target.context
+  ));
+}
+
+function verifyActionEffect(
+  action: AgentAction,
+  previousPage: PageState,
+  currentPage: PageState,
+): string | null {
+  if (action.action === 'click') {
+    const previousTarget = previousPage.elements.find((element) => element.ref === action.ref);
+    const currentTarget = findComparableElement(currentPage, previousTarget);
+    const pageChanged = previousPage.url !== currentPage.url
+      || previousPage.visibleText !== currentPage.visibleText
+      || previousPage.meta.hasDialog !== currentPage.meta.hasDialog
+      || previousPage.meta.elementCount !== currentPage.meta.elementCount;
+    if (
+      previousTarget
+      && currentTarget
+      && getElementSignature(previousTarget) === getElementSignature(currentTarget)
+      && !pageChanged
+    ) {
+      return `Click on ${previousTarget.name || action.ref} may not have changed the page.`;
+    }
+  }
+
+  if (action.action === 'type') {
+    const previousTarget = previousPage.elements.find((element) => element.ref === action.ref);
+    const currentTarget = findComparableElement(currentPage, previousTarget);
+    if (!currentTarget || currentTarget.value !== action.text) {
+      return `Typing into ${previousTarget?.name || action.ref} may not have updated the field.`;
+    }
+  }
+
+  if (action.action === 'scroll' && previousPage.meta.scrollPercent === currentPage.meta.scrollPercent) {
+    return `Scroll ${action.direction} may not have moved the page.`;
+  }
+
+  if (action.action === 'navigate' && previousPage.url === currentPage.url) {
+    return `Navigation to ${action.url} may not have completed.`;
+  }
+
+  return null;
+}
+
 function cancelledResult(): AgentRunResult {
   return {
     ok: false,
@@ -230,12 +353,79 @@ function cancelledResult(): AgentRunResult {
   };
 }
 
+function isTransientModelError(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === 'TimeoutError') {
+    return true;
+  }
+
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  return message.includes('rate limited')
+    || message.includes('server error')
+    || message.includes('timeout')
+    || message.includes('request failed (429)')
+    || message.includes('request failed (5')
+    || message.includes('temporarily unavailable');
+}
+
+async function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const timeoutId = globalThis.setTimeout(() => {
+      signal.removeEventListener('abort', handleAbort);
+      resolve();
+    }, ms);
+
+    function handleAbort(): void {
+      globalThis.clearTimeout(timeoutId);
+      signal.removeEventListener('abort', handleAbort);
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+    }
+
+    signal.addEventListener('abort', handleAbort, { once: true });
+  });
+}
+
+async function callModelWithRetry(
+  deps: AgentLoopDependencies,
+  step: number,
+  feed: ActionFeedEntry[],
+  messages: LlmMessage[],
+  settings: ProviderSettings,
+  pageState: PageState,
+): Promise<string> {
+  try {
+    return await deps.callModel(AGENT_SYSTEM_PROMPT, messages, settings, deps.signal);
+  } catch (error) {
+    if (deps.signal.aborted || !isTransientModelError(error)) {
+      throw error;
+    }
+
+    const warningEntry = makeFeedEntry('Model call failed, retrying in 2s...', 'warning');
+    feed.push(warningEntry);
+    await emitEvent(deps, {
+      step,
+      phase: 'plan',
+      entry: warningEntry,
+      pageState,
+    });
+
+    await abortableDelay(2000, deps.signal);
+    throwIfAborted(deps.signal);
+    return deps.callModel(AGENT_SYSTEM_PROMPT, messages, settings, deps.signal);
+  }
+}
+
 export async function runAgentLoop(
   options: AgentLoopOptions,
   deps: AgentLoopDependencies,
 ): Promise<AgentRunResult> {
   try {
-    const maxSteps = options.maxSteps ?? 6;
+    const maxSteps = Number.isFinite(options.maxSteps)
+      ? Math.max(1, Math.min(20, Math.floor(options.maxSteps ?? 6)))
+      : 6;
     const feed: ActionFeedEntry[] = [];
     const history: AgentAction[] = [];
 
@@ -267,8 +457,10 @@ export async function runAgentLoop(
         entry: planningEntry,
       });
 
-      const rawAction = await deps.callModel(
-        AGENT_SYSTEM_PROMPT,
+      const rawAction = await callModelWithRetry(
+        deps,
+        step,
+        feed,
         [
           {
             role: 'user',
@@ -280,7 +472,7 @@ export async function runAgentLoop(
           },
         ],
         options.settings,
-        deps.signal,
+        currentPage,
       );
       throwIfAborted(deps.signal);
 
@@ -424,8 +616,22 @@ export async function runAgentLoop(
           entry: actionDoneEntry,
         });
 
-        currentPage = await deps.getPageState();
+        const refreshedPage = await deps.getPageState();
         throwIfAborted(deps.signal);
+
+        const verifyWarning = verifyActionEffect(action, currentPage, refreshedPage);
+        if (verifyWarning) {
+          const warningEntry = makeFeedEntry(verifyWarning, 'warning');
+          feed.push(warningEntry);
+          await emitEvent(deps, {
+            step,
+            phase: 'verify',
+            entry: warningEntry,
+            pageState: refreshedPage,
+          });
+        }
+
+        currentPage = refreshedPage;
 
         const verifyEntry = makeFeedEntry(`Refreshed the page snapshot after ${action.action}.`, 'success');
         feed.push(verifyEntry);

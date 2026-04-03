@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 
 import {
+  PROVIDER_API_KEY_STORAGE_KEY,
   DEFAULT_PROVIDER_SETTINGS,
   mergeProviderSettings,
   PROVIDER_SETTINGS_STORAGE_KEY,
@@ -22,14 +23,29 @@ export const useSettingsStore = create<SettingsStoreState>((set, get) => ({
   setSettings: (settings) => set({ settings }),
   updateSettings: (patch) => set((state) => ({ settings: { ...state.settings, ...patch } })),
   load: async () => {
-    const stored = await chrome.storage.local.get(PROVIDER_SETTINGS_STORAGE_KEY);
+    const [stored, sessionStored] = await Promise.all([
+      chrome.storage.local.get(PROVIDER_SETTINGS_STORAGE_KEY),
+      chrome.storage.session.get(PROVIDER_API_KEY_STORAGE_KEY),
+    ]);
+    const persisted = stored[PROVIDER_SETTINGS_STORAGE_KEY] as Partial<ProviderSettings> | undefined;
+    const sessionApiKey = sessionStored[PROVIDER_API_KEY_STORAGE_KEY];
+    const apiKey = typeof sessionApiKey === 'string'
+      ? sessionApiKey
+      : (typeof persisted?.apiKey === 'string' ? persisted.apiKey : '');
     set({
-      settings: mergeProviderSettings(stored[PROVIDER_SETTINGS_STORAGE_KEY] as Partial<ProviderSettings> | undefined),
+      settings: mergeProviderSettings({
+        ...persisted,
+        apiKey,
+      }),
       loaded: true,
     });
   },
   save: async () => {
     const settings = get().settings;
-    await chrome.storage.local.set({ [PROVIDER_SETTINGS_STORAGE_KEY]: settings });
+    const { apiKey, ...persisted } = settings;
+    await Promise.all([
+      chrome.storage.local.set({ [PROVIDER_SETTINGS_STORAGE_KEY]: persisted }),
+      chrome.storage.session.set({ [PROVIDER_API_KEY_STORAGE_KEY]: apiKey }),
+    ]);
   },
 }));
