@@ -112,7 +112,7 @@ describe('provider endpoint helpers', () => {
   it('defaults first-run settings to the OpenAI path', () => {
     expect(DEFAULT_PROVIDER_SETTINGS.provider).toBe('openai');
     expect(DEFAULT_PROVIDER_SETTINGS.model).toBe('gpt-4.1-mini');
-    expect(DEFAULT_PROVIDER_SETTINGS.baseUrl).toBe('https://api.openai.com/v1/chat/completions');
+    expect(DEFAULT_PROVIDER_SETTINGS.baseUrl).toBe('https://api.openai.com/v1/responses');
   });
 
   it('returns provider presets for setup shortcuts', () => {
@@ -139,7 +139,7 @@ describe('provider endpoint helpers', () => {
         apiKey: 'openai-key',
         model: 'gpt-4o',
       }),
-    ).toBe('https://api.openai.com/v1/chat/completions');
+    ).toBe('https://api.openai.com/v1/responses');
 
     expect(
       getProviderEndpoint({
@@ -162,5 +162,16 @@ describe('provider endpoint helpers', () => {
       apiKey: 'anthropic-key',
       model: 'claude-sonnet-4-20250514',
     })).toBe(true);
+  });
+
+  it('migrates the old OpenAI chat endpoint to responses for saved settings', () => {
+    const merged = mergeProviderSettings({
+      provider: 'openai',
+      apiKey: 'openai-key',
+      model: 'gpt-4o',
+      baseUrl: 'https://api.openai.com/v1/chat/completions',
+    });
+
+    expect(merged.baseUrl).toBe('https://api.openai.com/v1/responses');
   });
 });

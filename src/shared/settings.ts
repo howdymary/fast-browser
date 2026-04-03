@@ -2,12 +2,14 @@ import type { ProviderName, ProviderSettings } from './types';
 
 export const PROVIDER_SETTINGS_STORAGE_KEY = 'fast-browser-provider-settings';
 export const PROVIDER_API_KEY_STORAGE_KEY = 'fast-browser-provider-api-key';
+const OPENAI_RESPONSES_ENDPOINT = 'https://api.openai.com/v1/responses';
+const OPENAI_LEGACY_CHAT_ENDPOINT = 'https://api.openai.com/v1/chat/completions';
 
 const PROVIDER_PRESETS: Record<ProviderName, Omit<ProviderSettings, 'apiKey'>> = {
   openai: {
     provider: 'openai',
     model: 'gpt-4.1-mini',
-    baseUrl: 'https://api.openai.com/v1/chat/completions',
+    baseUrl: OPENAI_RESPONSES_ENDPOINT,
   },
   anthropic: {
     provider: 'anthropic',
@@ -32,11 +34,16 @@ export const DEFAULT_PROVIDER_SETTINGS: ProviderSettings = getProviderPreset('op
 
 export function mergeProviderSettings(value: Partial<ProviderSettings> | undefined): ProviderSettings {
   const provider = value?.provider ?? DEFAULT_PROVIDER_SETTINGS.provider;
+  const baseUrl = provider === 'openai'
+    && (!value?.baseUrl || value.baseUrl.trim() === OPENAI_LEGACY_CHAT_ENDPOINT)
+    ? OPENAI_RESPONSES_ENDPOINT
+    : value?.baseUrl;
   return {
     ...getProviderPreset(provider),
     ...value,
     provider,
     apiKey: value?.apiKey ?? '',
+    ...(baseUrl ? { baseUrl } : {}),
   };
 }
 
@@ -50,7 +57,7 @@ export function getProviderEndpoint(settings: ProviderSettings): string {
     return trimmedBaseUrl || 'https://api.anthropic.com/v1/messages';
   }
   if (settings.provider === 'openai') {
-    return trimmedBaseUrl || 'https://api.openai.com/v1/chat/completions';
+    return trimmedBaseUrl || OPENAI_RESPONSES_ENDPOINT;
   }
   return trimmedBaseUrl || 'http://127.0.0.1:11434/v1/chat/completions';
 }

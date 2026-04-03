@@ -18,7 +18,7 @@ function makeSettings(provider: ProviderSettings['provider']): ProviderSettings 
       provider,
       apiKey: 'openai-key',
       model: 'gpt-4o',
-      baseUrl: 'https://api.openai.com/v1/chat/completions',
+      baseUrl: 'https://api.openai.com/v1/responses',
     };
   }
 
@@ -66,11 +66,11 @@ describe('callLlm', () => {
     });
   });
 
-  it('returns OpenAI chat content and sends max_tokens', async () => {
+  it('returns OpenAI responses content and sends max_output_tokens', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: vi.fn().mockResolvedValue({
-        choices: [{ message: { content: '  hello from openai  ' } }],
+        output_text: '  hello from openai  ',
       }),
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -82,8 +82,37 @@ describe('callLlm', () => {
     const [, init] = fetchMock.mock.calls[0];
     expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({
       model: settings.model,
+      instructions: 'System prompt',
+      max_output_tokens: 400,
+      input: [{ role: 'user', content: 'Hi' }],
+    });
+  });
+
+  it('still supports OpenAI-compatible chat completions endpoints', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: 'legacy hello from openai' } }],
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const settings = {
+      ...makeSettings('openai'),
+      baseUrl: 'https://api.openai.com/v1/chat/completions',
+    };
+    const result = await callLlm('System prompt', [{ role: 'user', content: 'Hi' }], settings);
+
+    expect(result).toBe('legacy hello from openai');
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({
+      model: settings.model,
       max_tokens: 400,
       temperature: 0,
+      messages: [
+        { role: 'system', content: 'System prompt' },
+        { role: 'user', content: 'Hi' },
+      ],
     });
   });
 
@@ -143,6 +172,18 @@ describe('callLlm', () => {
     ).rejects.toThrow(/server error \(500\)/i);
   });
 
+  it('throws a descriptive endpoint error for OpenAI 404s', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: vi.fn().mockResolvedValue({}),
+    }));
+
+    await expect(
+      callLlm('System prompt', [{ role: 'user', content: 'Hi' }], makeSettings('openai')),
+    ).rejects.toThrow(/responses api endpoint/i);
+  });
+
   it('propagates timeout failures with a descriptive error', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new DOMException('Request timed out', 'TimeoutError')));
 
@@ -154,7 +195,7 @@ describe('callLlm', () => {
   it('throws when a provider returns an empty response body', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
-      json: vi.fn().mockResolvedValue({ choices: [] }),
+      json: vi.fn().mockResolvedValue({ output: [] }),
     }));
 
     await expect(
