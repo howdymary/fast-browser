@@ -5,6 +5,9 @@ import type {
   ContentExecuteResponse,
   ContentExtractRequest,
   ContentExtractResponse,
+  RunPortMessage,
+  RunStreamUpdate,
+  RunTaskPortRequest,
 } from '../shared/messages';
 import { callLlm } from './llm-client';
 import { runAgentLoop } from './agent-loop';
@@ -15,6 +18,8 @@ import {
   validateProviderSettings,
 } from '../shared/settings';
 import type { ActionFeedEntry, ExecutableAction, NavigateAction, ProviderSettings } from '../shared/types';
+
+const RUNNER_PORT_NAME = 'fast-browser-runner';
 
 function makeFeedEntry(message: string, kind: ActionFeedEntry['kind'] = 'info'): ActionFeedEntry {
   return {
@@ -86,8 +91,142 @@ async function navigateTab(tabId: number, action: NavigateAction): Promise<void>
   });
 }
 
+interface RunTaskOptions {
+  tabId: number;
+  task: string;
+  settings: ProviderSettings;
+  emitUpdate?: (update: Omit<RunStreamUpdate, 'type' | 'runId'>) => Promise<void> | void;
+  isCancelled?: () => boolean;
+}
+
+async function runTask(options: RunTaskOptions): Promise<BackgroundResponse> {
+  return runAgentLoop(
+    {
+      task: options.task,
+      settings: options.settings ?? DEFAULT_PROVIDER_SETTINGS,
+    },
+    {
+      getPageState: () => extractActivePageState(options.tabId, options.task),
+      executeAction: async (action, snapshotId) => {
+        await executeContentAction(options.tabId, action, snapshotId);
+        await new Promise((resolve) => globalThis.setTimeout(resolve, action.action === 'click' ? 500 : 150));
+      },
+      navigate: async (action) => {
+        await navigateTab(options.tabId, action);
+      },
+      callModel: callLlm,
+      emitUpdate: options.emitUpdate,
+      isCancelled: options.isCancelled,
+    },
+  );
+}
+
 chrome.runtime.onInstalled.addListener(async () => {
   await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+});
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== RUNNER_PORT_NAME) {
+    return;
+  }
+
+  let disconnected = false;
+  let activeRunId: string | null = null;
+
+  port.onDisconnect.addListener(() => {
+    disconnected = true;
+  });
+
+  port.onMessage.addListener((message: RunPortMessage | RunTaskPortRequest) => {
+    if (message.type !== 'FAST_BROWSER_RUN_START') {
+      return;
+    }
+
+    if (activeRunId) {
+      port.postMessage({
+        type: 'FAST_BROWSER_RUN_UPDATE',
+        runId: activeRunId,
+        step: 0,
+        phase: 'error',
+        status: 'error',
+        feed: [makeFeedEntry('A run is already active on this port.', 'error')],
+        error: 'A run is already active on this port.',
+        ok: false,
+      } satisfies RunStreamUpdate);
+      return;
+    }
+
+    activeRunId = crypto.randomUUID();
+
+    void (async () => {
+      try {
+        const tabId = await getActiveTabId();
+        const settings = await loadProviderSettings();
+        const settingsError = validateProviderSettings(settings);
+        if (settingsError) {
+          if (!disconnected) {
+            port.postMessage({
+              type: 'FAST_BROWSER_RUN_UPDATE',
+              runId: activeRunId!,
+              step: 0,
+              phase: 'error',
+              status: 'error',
+              feed: [makeFeedEntry(settingsError, 'error')],
+              error: settingsError,
+              ok: false,
+            } satisfies RunStreamUpdate);
+          }
+          return;
+        }
+
+        const result = await runTask({
+          tabId,
+          task: message.task,
+          settings,
+          emitUpdate: async (update) => {
+            if (disconnected) {
+              return;
+            }
+            port.postMessage({
+              type: 'FAST_BROWSER_RUN_UPDATE',
+              runId: activeRunId!,
+              ...update,
+            } satisfies RunStreamUpdate);
+          },
+          isCancelled: () => disconnected,
+        });
+
+        if (!disconnected && result.feed.length === 0) {
+          port.postMessage({
+            type: 'FAST_BROWSER_RUN_UPDATE',
+            runId: activeRunId!,
+            step: 0,
+            phase: result.ok ? 'done' : 'error',
+            status: result.ok ? 'idle' : 'error',
+            pageState: result.pageState,
+            finalMessage: result.finalMessage,
+            error: result.error,
+            ok: result.ok,
+          } satisfies RunStreamUpdate);
+        }
+      } catch (error) {
+        if (!disconnected) {
+          port.postMessage({
+            type: 'FAST_BROWSER_RUN_UPDATE',
+            runId: activeRunId!,
+            step: 0,
+            phase: 'error',
+            status: 'error',
+            feed: [makeFeedEntry('Unable to run the browser agent.', 'error')],
+            error: error instanceof Error ? error.message : 'Unknown extension error.',
+            ok: false,
+          } satisfies RunStreamUpdate);
+        }
+      } finally {
+        activeRunId = null;
+      }
+    })();
+  });
 });
 
 chrome.runtime.onMessage.addListener((message: BackgroundMessage, _sender, sendResponse) => {
@@ -127,23 +266,11 @@ chrome.runtime.onMessage.addListener((message: BackgroundMessage, _sender, sendR
         return;
       }
 
-      const result = await runAgentLoop(
-        {
-          task: message.task,
-          settings: settings ?? DEFAULT_PROVIDER_SETTINGS,
-        },
-        {
-          getPageState: () => extractActivePageState(tabId, message.task),
-          executeAction: async (action, snapshotId) => {
-            await executeContentAction(tabId, action, snapshotId);
-            await new Promise((resolve) => globalThis.setTimeout(resolve, action.action === 'click' ? 500 : 150));
-          },
-          navigate: async (action) => {
-            await navigateTab(tabId, action);
-          },
-          callModel: callLlm,
-        },
-      );
+      const result = await runTask({
+        tabId,
+        task: message.task,
+        settings: settings ?? DEFAULT_PROVIDER_SETTINGS,
+      });
 
       sendResponse({
         ...result,

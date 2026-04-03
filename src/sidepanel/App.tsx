@@ -1,6 +1,6 @@
-import { useEffect, useMemo, type ReactElement } from 'react';
+import { useEffect, useMemo, useRef, type ReactElement } from 'react';
 
-import type { BackgroundResponse } from '../shared/messages';
+import type { BackgroundResponse, RunPortMessage, RunStreamUpdate } from '../shared/messages';
 import { ActionFeed } from './components/ActionFeed';
 import { useAgentStore } from './stores/agent-store';
 import { useSettingsStore } from './stores/settings-store';
@@ -9,11 +9,15 @@ export function App(): ReactElement {
   const {
     task,
     status,
+    phase,
+    currentRunId,
     pageState,
     feed,
     error,
     setTask,
     setStatus,
+    setPhase,
+    setCurrentRunId,
     setPageState,
     appendFeed,
     setError,
@@ -26,6 +30,8 @@ export function App(): ReactElement {
     load: loadSettings,
     save: saveSettings,
   } = useSettingsStore();
+  const runnerPortRef = useRef<chrome.runtime.Port | null>(null);
+  const currentRunIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!loaded) {
@@ -33,12 +39,78 @@ export function App(): ReactElement {
     }
   }, [loaded, loadSettings]);
 
+  useEffect(() => {
+    const port = chrome.runtime.connect({ name: 'fast-browser-runner' });
+    runnerPortRef.current = port;
+
+    function handleRunUpdate(message: RunPortMessage): void {
+      if (message.type !== 'FAST_BROWSER_RUN_UPDATE') {
+        return;
+      }
+
+      const update = message as RunStreamUpdate;
+      if (currentRunIdRef.current && update.runId !== currentRunIdRef.current) {
+        return;
+      }
+
+      if (!currentRunIdRef.current) {
+        currentRunIdRef.current = update.runId;
+        setCurrentRunId(update.runId);
+      }
+
+      setStatus(update.status);
+      setPhase(update.phase);
+      if (update.feed?.length) {
+        appendFeed(update.feed);
+      }
+      if (update.pageState) {
+        setPageState(update.pageState);
+      }
+      if (update.error) {
+        setError(update.error);
+      } else if (update.ok) {
+        setError(null);
+      }
+
+      if (update.phase === 'done' || update.phase === 'error' || update.phase === 'cancelled') {
+        if (update.phase === 'done' && update.status !== 'asking') {
+          setStatus('idle');
+        }
+        currentRunIdRef.current = null;
+        setCurrentRunId(null);
+      }
+    }
+
+    function handleDisconnect(): void {
+      runnerPortRef.current = null;
+      if (currentRunIdRef.current) {
+        setStatus('error');
+        setPhase('error');
+        setError('The live run connection closed unexpectedly.');
+        currentRunIdRef.current = null;
+        setCurrentRunId(null);
+      }
+    }
+
+    port.onMessage.addListener(handleRunUpdate);
+    port.onDisconnect.addListener(handleDisconnect);
+
+    return () => {
+      port.onMessage.removeListener(handleRunUpdate);
+      port.onDisconnect.removeListener(handleDisconnect);
+      port.disconnect();
+      runnerPortRef.current = null;
+    };
+  }, [appendFeed, setCurrentRunId, setError, setPageState, setPhase, setStatus]);
+
   const statusLabel = useMemo(() => {
     switch (status) {
       case 'thinking':
-        return 'Reading the current page';
+        return phase === 'observe-start' || phase === 'observe-done' ? 'Reading the current page' : 'Planning the next step';
       case 'acting':
         return 'Executing an action';
+      case 'verifying':
+        return 'Verifying the result';
       case 'asking':
         return 'Waiting for confirmation';
       case 'error':
@@ -46,10 +118,13 @@ export function App(): ReactElement {
       default:
         return 'Ready';
     }
-  }, [status]);
+  }, [phase, status]);
+
+  const runInFlight = status === 'thinking' || status === 'acting' || status === 'verifying';
 
   async function handleInspectPage(): Promise<void> {
     setStatus('thinking');
+    setPhase('observe-start');
     setError(null);
     resetFeed();
 
@@ -68,41 +143,24 @@ export function App(): ReactElement {
     setPageState(response.pageState);
     appendFeed(response.feed ?? []);
     setStatus('idle');
+    setPhase(null);
   }
 
   async function handleRunAgent(): Promise<void> {
     setStatus('thinking');
+    setPhase('observe-start');
     setError(null);
     resetFeed();
     setPageState(null);
+    currentRunIdRef.current = null;
+    setCurrentRunId(null);
 
     await saveSettings();
 
-    const response = await chrome.runtime.sendMessage({
-      type: 'FAST_BROWSER_RUN_TASK',
+    runnerPortRef.current?.postMessage({
+      type: 'FAST_BROWSER_RUN_START',
       task: task.trim(),
-    }) as BackgroundResponse;
-
-    appendFeed(response.feed ?? []);
-
-    if (!response.ok) {
-      setStatus('error');
-      setError(response.error ?? 'The browser agent failed.');
-      if (response.pageState) {
-        setPageState(response.pageState);
-      }
-      return;
-    }
-
-    if (response.pageState) {
-      setPageState(response.pageState);
-    }
-
-    const hasWarning = (response.feed ?? []).some((entry) => entry.kind === 'warning');
-    setStatus(hasWarning ? 'asking' : 'idle');
-    if (response.finalMessage) {
-      setError(null);
-    }
+    });
   }
 
   return (
@@ -113,6 +171,9 @@ export function App(): ReactElement {
             <div>
               <p className="text-xs uppercase tracking-[0.25em] text-sky-300">Fast Browser</p>
               <h1 className="mt-1 text-xl font-semibold">First real action loop</h1>
+              <p className="mt-1 text-xs text-slate-400">
+                {phase ? `Live phase: ${phase}` : 'Task runner idle'}
+              </p>
             </div>
             <div className="rounded-full border border-slate-700 bg-slate-900/70 px-3 py-1 text-xs text-slate-300">
               {statusLabel}
@@ -142,7 +203,7 @@ export function App(): ReactElement {
               type="button"
               className="rounded-full bg-emerald-400 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
               onClick={() => { void handleRunAgent(); }}
-              disabled={!task.trim()}
+              disabled={!task.trim() || currentRunId !== null || runInFlight}
             >
               Run agent
             </button>
@@ -154,7 +215,11 @@ export function App(): ReactElement {
                 setError(null);
                 resetFeed();
                 setStatus('idle');
+                setPhase(null);
+                currentRunIdRef.current = null;
+                setCurrentRunId(null);
               }}
+              disabled={runInFlight}
             >
               Clear
             </button>
@@ -229,7 +294,7 @@ export function App(): ReactElement {
           <div className="rounded-3xl border border-slate-800 bg-slate-950/60 p-4">
             <div className="mb-3 flex items-center justify-between gap-3">
               <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">Action feed</h2>
-              <span className="text-xs text-slate-500">Current focus: inspect + click/type/scroll/wait/navigate</span>
+              <span className="text-xs text-slate-500">Streaming run events over a live Port</span>
             </div>
             <ActionFeed entries={feed} />
           </div>

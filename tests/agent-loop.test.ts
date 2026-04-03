@@ -71,6 +71,50 @@ describe('runAgentLoop', () => {
     expect(result.pageState?.snapshotId).toBe('snapshot-2');
   });
 
+  it('emits streaming updates in phase order', async () => {
+    const firstPage = makePageState();
+    const secondPage = makePageState({
+      snapshotId: 'snapshot-2',
+      visibleText: 'Search results',
+    });
+    const phases: string[] = [];
+
+    await runAgentLoop(
+      {
+        task: 'Click the search button',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        getPageState: vi
+          .fn<() => Promise<PageState>>()
+          .mockResolvedValueOnce(firstPage)
+          .mockResolvedValueOnce(secondPage),
+        executeAction: vi.fn().mockResolvedValue(undefined),
+        navigate: vi.fn().mockResolvedValue(undefined),
+        callModel: vi
+          .fn()
+          .mockResolvedValueOnce('{"action":"click","ref":"@e1","reason":"Click search"}')
+          .mockResolvedValueOnce('{"action":"done","result":"Found the results page.","reason":"Task complete"}'),
+        emitUpdate: async (update) => {
+          phases.push(update.phase);
+        },
+      },
+    );
+
+    expect(phases).toEqual([
+      'observe-start',
+      'observe-done',
+      'plan-start',
+      'plan-ready',
+      'act-start',
+      'act-result',
+      'verify-done',
+      'plan-start',
+      'plan-ready',
+      'done',
+    ]);
+  });
+
   it('asks for approval before acting on a sensitive field', async () => {
     const page = makePageState({
       elements: [
@@ -101,5 +145,30 @@ describe('runAgentLoop', () => {
     expect(result.ok).toBe(true);
     expect(result.finalMessage).toMatch(/sensitive/i);
     expect(result.feed.some((entry) => entry.kind === 'warning')).toBe(true);
+  });
+
+  it('stops cleanly when the run is cancelled', async () => {
+    const phases: string[] = [];
+
+    const result = await runAgentLoop(
+      {
+        task: 'Click the search button',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        getPageState: vi.fn().mockResolvedValue(makePageState()),
+        executeAction: vi.fn(),
+        navigate: vi.fn(),
+        callModel: vi.fn(),
+        emitUpdate: async (update) => {
+          phases.push(update.phase);
+        },
+        isCancelled: () => true,
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/cancelled/i);
+    expect(phases).toEqual(['observe-start', 'cancelled']);
   });
 });

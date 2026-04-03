@@ -10,6 +10,7 @@ This repo is intentionally starting small. The current scaffold now proves the c
 - DOM-native page extraction
 - React side panel for task entry and provider settings
 - first observe → plan → act → verify loop against the active tab
+- live step-by-step updates streamed to the side panel over a long-lived extension Port
 
 ## Current scope
 
