@@ -79,7 +79,11 @@ npm run build
 npm test
 ```
 
-## Docs
+## Roadmap
 
-- [Product spec](./fast-browser-product-spec.md)
-- [Engineering prompt](./fast-browser-engineering-prompt.md)
+Near-term priorities:
+
+- stream step-by-step run updates to the side panel
+- add a small action verifier and better page-settling logic
+- support richer but still safe actions like `select` and `extract`
+- harden prompt-injection defenses before broader release

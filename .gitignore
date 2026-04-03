@@ -2,4 +2,5 @@ dist/
 node_modules/
 coverage/
 .DS_Store
-
+fast-browser-engineering-prompt.md
+fast-browser-product-spec.md
