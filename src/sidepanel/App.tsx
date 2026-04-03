@@ -9,12 +9,12 @@ import type {
 } from '../shared/messages';
 import {
   getProviderEndpoint,
-  getProviderModelOptions,
-  getProviderPreset,
-  providerNeedsApiKey,
+  fetchInstalledModelOptions,
+  getSuggestedModelOptions,
   validateProviderSettings,
+  type ProviderModelOption,
 } from '../shared/settings';
-import type { ProviderName, ProviderSettings, RunPhase } from '../shared/types';
+import type { ProviderSettings, RunPhase } from '../shared/types';
 import { ActionFeed } from './components/ActionFeed';
 import { useAgentStore } from './stores/agent-store';
 import { useSettingsStore } from './stores/settings-store';
@@ -31,7 +31,6 @@ interface FormErrors {
   task?: string;
   model?: string;
   endpoint?: string;
-  apiKey?: string;
   maxSteps?: string;
 }
 
@@ -60,7 +59,7 @@ function validateRunForm(
     errors.maxSteps = 'Choose a whole number between 1 and 20.';
   }
 
-  if (settings.provider === 'ollama' && !settings.baseUrl?.trim()) {
+  if (!settings.baseUrl?.trim()) {
     errors.endpoint = 'Set an Ollama endpoint before running.';
   } else if (settings.baseUrl?.trim()) {
     try {
@@ -68,10 +67,6 @@ function validateRunForm(
     } catch {
       errors.endpoint = 'Base URL must be a valid URL.';
     }
-  }
-
-  if (providerNeedsApiKey(settings) && !settings.apiKey.trim()) {
-    errors.apiKey = `Paste an API key for ${providerLabel(settings.provider)}.`;
   }
 
   return errors;
@@ -96,37 +91,29 @@ function statusLabelForPhase(phase: RunPhase | null): string {
   }
 }
 
-function providerLabel(provider: ProviderName): string {
-  switch (provider) {
-    case 'openai':
-      return 'OpenAI';
-    case 'anthropic':
-      return 'Anthropic';
-    case 'ollama':
-      return 'Ollama';
-  }
-}
-
-function providerHint(settings: ProviderSettings): string {
-  switch (settings.provider) {
-    case 'openai':
-      return 'Paste your OpenAI API key and run. The key stays in session storage only.';
-    case 'anthropic':
-      return 'Paste your Anthropic API key. Fast Browser stores it for this browser session only.';
-    case 'ollama':
-      return 'Use a local Ollama model for the easiest private setup. The default endpoint works for most local installs.';
-  }
+function providerHint(): string {
+  return 'Fast Browser runs against your local Ollama server. Pick a detected model or type any local model ID.';
 }
 
 function providerSummary(settings: ProviderSettings): string {
-  const label = providerLabel(settings.provider);
-  if (providerNeedsApiKey(settings) && !settings.apiKey.trim()) {
-    return `${label} · API key needed`;
+  return `Local Ollama · ${settings.model}`;
+}
+
+function installedModelStatusLabel(
+  installedModels: ProviderModelOption[],
+  loading: boolean,
+): string {
+  if (loading) {
+    return 'Checking local models…';
   }
-  if (settings.provider === 'ollama') {
-    return `${label} · local ${settings.model}`;
+  if (installedModels.length === 0) {
+    return 'No local models detected';
   }
-  return `${label} · ${settings.model}`;
+  return `${installedModels.length} local model${installedModels.length === 1 ? '' : 's'} detected`;
+}
+
+function formatSuggestedInstallCommand(model: string): string {
+  return `ollama pull ${model}`;
 }
 
 function isSupportedPageUrl(url: string | undefined): boolean {
@@ -195,13 +182,17 @@ export function App(): ReactElement {
   const [showSetup, setShowSetup] = useState(false);
   const [showAdvancedSetup, setShowAdvancedSetup] = useState(false);
   const [showAdvancedControls, setShowAdvancedControls] = useState(false);
-  const [showCustomModelInput, setShowCustomModelInput] = useState(false);
+  const [installedModels, setInstalledModels] = useState<ProviderModelOption[]>([]);
+  const [installedModelsLoading, setInstalledModelsLoading] = useState(false);
+  const [installedModelsError, setInstalledModelsError] = useState<string | null>(null);
+  const [modelNotice, setModelNotice] = useState<string | null>(null);
 
   const runnerPortRef = useRef<chrome.runtime.Port | null>(null);
   const currentRunIdRef = useRef<string | null>(null);
   const lastSeqRef = useRef(0);
   const phaseRef = useRef<RunPhase | null>(null);
   const disconnectSuppressedRef = useRef(false);
+  const initialModelSelectionRef = useRef(false);
 
   useEffect(() => {
     phaseRef.current = phase;
@@ -223,10 +214,39 @@ export function App(): ReactElement {
   }, []);
 
   useEffect(() => {
-    if (providerNeedsApiKey(settings) && !settings.apiKey.trim()) {
+    if (!settings.model.trim()) {
       setShowSetup(true);
     }
   }, [settings]);
+
+  async function refreshInstalledModels(): Promise<void> {
+    setInstalledModelsLoading(true);
+    setInstalledModelsError(null);
+
+    try {
+      const models = await fetchInstalledModelOptions();
+      setInstalledModels(models);
+      if (models.length === 0) {
+        setInstalledModelsError('No local Ollama models were found yet. Run "ollama pull llama3.2:3b" to install a good default.');
+      }
+    } catch (error) {
+      setInstalledModels([]);
+      setInstalledModelsError(
+        error instanceof Error
+          ? `${error.message} Start Ollama with "ollama serve" if it is not already running.`
+          : 'Could not reach the local Ollama server.',
+      );
+    } finally {
+      setInstalledModelsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!loaded) {
+      return;
+    }
+    void refreshInstalledModels();
+  }, [loaded]);
 
   useEffect(() => {
     return () => {
@@ -247,12 +267,18 @@ export function App(): ReactElement {
 
   const statusLabel = useMemo(() => statusLabelForPhase(phase), [phase]);
   const runInFlight = currentRunId !== null;
-  const modelOptions = useMemo(
-    () => getProviderModelOptions(settings.provider),
-    [settings.provider],
-  );
+  const modelOptions = useMemo(() => installedModels, [installedModels]);
+  const suggestedModels = useMemo(() => getSuggestedModelOptions(), []);
   const selectedModelOption = useMemo(
     () => modelOptions.find((option) => option.value === settings.model) ?? null,
+    [modelOptions, settings.model],
+  );
+  const suggestedModelNames = useMemo(
+    () => suggestedModels.map((option) => option.value).join(', '),
+    [suggestedModels],
+  );
+  const currentModelInstalled = useMemo(
+    () => modelOptions.some((option) => option.value === settings.model.trim()),
     [modelOptions, settings.model],
   );
   const providerValidationError = useMemo(
@@ -269,8 +295,32 @@ export function App(): ReactElement {
     || (siteAccess.status === 'not-granted' && (validationAttempted || Boolean(error)));
 
   useEffect(() => {
-    setShowCustomModelInput(selectedModelOption === null);
-  }, [selectedModelOption]);
+    if (
+      initialModelSelectionRef.current
+      || installedModelsLoading
+      || modelOptions.length === 0
+    ) {
+      return;
+    }
+
+    initialModelSelectionRef.current = true;
+
+    if (!currentModelInstalled) {
+      const fallbackModel = modelOptions[0]?.value;
+      if (!fallbackModel) {
+        return;
+      }
+
+      const previousModel = settings.model.trim();
+      updateSettings({ model: fallbackModel });
+
+      if (previousModel && previousModel !== fallbackModel) {
+        setModelNotice(
+          `"${previousModel}" is not installed locally. Fast Browser switched to "${fallbackModel}". Run "${formatSuggestedInstallCommand(previousModel)}" if you want to use it.`,
+        );
+      }
+    }
+  }, [currentModelInstalled, installedModelsLoading, modelOptions, settings.model, updateSettings]);
 
   function cleanupRunnerPort(options?: { disconnect?: boolean }): void {
     currentRunIdRef.current = null;
@@ -450,25 +500,7 @@ export function App(): ReactElement {
     runnerPortRef.current.postMessage(cancelMessage);
   }
 
-  function applyProviderPreset(provider: ProviderName): void {
-    const preset = getProviderPreset(provider);
-    updateSettings({
-      ...preset,
-      apiKey: settings.apiKey,
-    });
-    setShowCustomModelInput(false);
-  }
-
   function handleModelSelection(value: string): void {
-    if (value === '__custom__') {
-      setShowCustomModelInput(true);
-      if (selectedModelOption) {
-        updateSettings({ model: '' });
-      }
-      return;
-    }
-
-    setShowCustomModelInput(false);
     updateSettings({ model: value });
   }
 
@@ -555,7 +587,7 @@ export function App(): ReactElement {
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <h2 className="text-sm font-semibold text-white">Model setup</h2>
-                  <p className="mt-1 max-w-lg text-sm text-slate-300">{providerHint(settings)}</p>
+                  <p className="mt-1 max-w-lg text-sm text-slate-300">{providerHint()}</p>
                 </div>
                 <button
                   type="button"
@@ -567,28 +599,17 @@ export function App(): ReactElement {
                 </button>
               </div>
 
-              <div className="mt-4 flex flex-wrap gap-2">
-                {(['openai', 'anthropic', 'ollama'] as const).map((provider) => (
-                  <button
-                    key={provider}
-                    type="button"
-                    className={`rounded-full px-3 py-1.5 text-sm transition ${
-                      settings.provider === provider
-                        ? 'bg-orange-300 text-slate-950'
-                        : 'border border-white/10 bg-white/5 text-slate-200 hover:border-white/20 hover:bg-white/10'
-                    }`}
-                    onClick={() => applyProviderPreset(provider)}
-                    disabled={runInFlight}
-                  >
-                    {providerLabel(provider)}
-                  </button>
-                ))}
+              <div className="mt-4 rounded-2xl border border-emerald-500/15 bg-emerald-500/8 px-4 py-3 text-sm text-emerald-100">
+                <div className="font-medium">Local-only mode</div>
+                <div className="mt-1 text-emerald-100/80">
+                  Fast Browser now uses only your local Ollama server. No external API key is required.
+                </div>
               </div>
 
               <div className="mt-4 grid gap-3 md:grid-cols-2">
                 <div>
                   <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="model-select">
-                    Model
+                    Installed models
                   </label>
                   <select
                     id="model-select"
@@ -605,8 +626,17 @@ export function App(): ReactElement {
                     <option value="__custom__">Custom model…</option>
                   </select>
                   <p className="mt-2 text-xs text-slate-500">
-                    {selectedModelOption?.helper ?? 'Type any compatible model name if it is not in the list.'}
+                    {selectedModelOption?.helper ?? 'Type any installed local model name if it is not in the list.'}
                   </p>
+                  {installedModelsLoading ? (
+                    <p className="mt-2 text-xs text-slate-500">Checking local Ollama models…</p>
+                  ) : null}
+                  {installedModelsError ? (
+                    <p className="mt-2 text-xs text-amber-200">{installedModelsError}</p>
+                  ) : null}
+                  {modelNotice ? (
+                    <p className="mt-2 text-xs text-amber-200">{modelNotice}</p>
+                  ) : null}
                   <label className="mt-3 block text-xs font-semibold uppercase tracking-[0.2em] text-slate-500" htmlFor="model-input">
                     Model ID
                   </label>
@@ -615,7 +645,6 @@ export function App(): ReactElement {
                     className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 text-sm text-slate-50 outline-none focus:border-orange-300/60"
                     value={settings.model}
                     onChange={(event) => {
-                      setShowCustomModelInput(true);
                       updateSettings({ model: event.target.value });
                     }}
                     placeholder="Enter or edit a model name"
@@ -625,36 +654,14 @@ export function App(): ReactElement {
                     <p className="mt-2 text-xs text-rose-300">{formErrors.model}</p>
                   ) : null}
                 </div>
-
-                {providerNeedsApiKey(settings) ? (
-                  <div>
-                    <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="api-key-input">
-                      API key
-                    </label>
-                    <input
-                      id="api-key-input"
-                      type="password"
-                      className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 text-sm text-slate-50 outline-none focus:border-orange-300/60"
-                      value={settings.apiKey}
-                      onChange={(event) => updateSettings({ apiKey: event.target.value })}
-                      placeholder={`Paste your ${providerLabel(settings.provider)} API key`}
-                      disabled={runInFlight}
-                    />
-                    <p className="mt-2 text-xs text-slate-500">
-                      Stored in session only. It is not persisted to local storage.
-                    </p>
-                    {validationAttempted && formErrors.apiKey ? (
-                      <p className="mt-2 text-xs text-rose-300">{formErrors.apiKey}</p>
-                    ) : null}
-                  </div>
-                ) : (
-                  <div className="rounded-2xl border border-emerald-500/15 bg-emerald-500/8 px-4 py-3 text-sm text-emerald-100">
-                    <div className="font-medium">Local mode</div>
-                    <div className="mt-1 text-emerald-100/80">
-                      Fast Browser will use your local Ollama server at the default endpoint unless you change it below.
-                    </div>
-                  </div>
-                )}
+                <div className="rounded-2xl border border-white/8 bg-slate-950/70 p-4 text-sm text-slate-200">
+                  <div className="font-medium text-white">Quick local setup</div>
+                  <ol className="mt-2 list-decimal space-y-2 pl-4 text-sm text-slate-300">
+                    <li>Start Ollama with <code className="rounded bg-white/5 px-1 py-0.5 text-xs">ollama serve</code>.</li>
+                    <li>Install a model if needed, for example <code className="rounded bg-white/5 px-1 py-0.5 text-xs">ollama pull llama3.2:3b</code>.</li>
+                    <li>Reload this panel and run a prompt on the current page.</li>
+                  </ol>
+                </div>
               </div>
 
               <button
@@ -679,7 +686,7 @@ export function App(): ReactElement {
                     disabled={runInFlight}
                   />
                   <p className="mt-2 text-xs text-slate-500">
-                    Leave this at the default unless you are using a custom OpenAI-compatible endpoint.
+                    Leave this at the default unless your Ollama server is running somewhere else.
                   </p>
                   {validationAttempted && formErrors.endpoint ? (
                     <p className="mt-2 text-xs text-rose-300">{formErrors.endpoint}</p>

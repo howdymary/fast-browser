@@ -14,7 +14,6 @@ import contentScriptFile from '../content/content-script.ts?script';
 import { callLlm } from './llm-client';
 import { makeFeedEntry, runAgentLoop } from './agent-loop';
 import {
-  PROVIDER_API_KEY_STORAGE_KEY,
   DEFAULT_PROVIDER_SETTINGS,
   mergeProviderSettings,
   PROVIDER_SETTINGS_STORAGE_KEY,
@@ -47,18 +46,9 @@ async function getActiveTabId(): Promise<number> {
 }
 
 async function loadProviderSettings(): Promise<ProviderSettings> {
-  const [stored, sessionStored] = await Promise.all([
-    chrome.storage.local.get(PROVIDER_SETTINGS_STORAGE_KEY),
-    chrome.storage.session.get(PROVIDER_API_KEY_STORAGE_KEY),
-  ]);
+  const stored = await chrome.storage.local.get(PROVIDER_SETTINGS_STORAGE_KEY);
   const persisted = stored[PROVIDER_SETTINGS_STORAGE_KEY] as Partial<ProviderSettings> | undefined;
-  const sessionApiKey = sessionStored[PROVIDER_API_KEY_STORAGE_KEY];
-  return mergeProviderSettings({
-    ...persisted,
-    apiKey: typeof sessionApiKey === 'string'
-      ? sessionApiKey
-      : (typeof persisted?.apiKey === 'string' ? persisted.apiKey : ''),
-  });
+  return mergeProviderSettings(persisted);
 }
 
 async function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {

@@ -1,12 +1,13 @@
 import { create } from 'zustand';
 
 import {
-  PROVIDER_API_KEY_STORAGE_KEY,
   DEFAULT_PROVIDER_SETTINGS,
   mergeProviderSettings,
   PROVIDER_SETTINGS_STORAGE_KEY,
 } from '../../shared/settings';
 import type { ProviderSettings } from '../../shared/types';
+
+const LEGACY_PROVIDER_API_KEY_STORAGE_KEY = 'fast-browser-provider-api-key';
 
 interface SettingsStoreState {
   settings: ProviderSettings;
@@ -23,29 +24,18 @@ export const useSettingsStore = create<SettingsStoreState>((set, get) => ({
   setSettings: (settings) => set({ settings }),
   updateSettings: (patch) => set((state) => ({ settings: { ...state.settings, ...patch } })),
   load: async () => {
-    const [stored, sessionStored] = await Promise.all([
-      chrome.storage.local.get(PROVIDER_SETTINGS_STORAGE_KEY),
-      chrome.storage.session.get(PROVIDER_API_KEY_STORAGE_KEY),
-    ]);
+    const stored = await chrome.storage.local.get(PROVIDER_SETTINGS_STORAGE_KEY);
     const persisted = stored[PROVIDER_SETTINGS_STORAGE_KEY] as Partial<ProviderSettings> | undefined;
-    const sessionApiKey = sessionStored[PROVIDER_API_KEY_STORAGE_KEY];
-    const apiKey = typeof sessionApiKey === 'string'
-      ? sessionApiKey
-      : (typeof persisted?.apiKey === 'string' ? persisted.apiKey : '');
     set({
-      settings: mergeProviderSettings({
-        ...persisted,
-        apiKey,
-      }),
+      settings: mergeProviderSettings(persisted),
       loaded: true,
     });
   },
   save: async () => {
     const settings = get().settings;
-    const { apiKey, ...persisted } = settings;
     await Promise.all([
-      chrome.storage.local.set({ [PROVIDER_SETTINGS_STORAGE_KEY]: persisted }),
-      chrome.storage.session.set({ [PROVIDER_API_KEY_STORAGE_KEY]: apiKey }),
+      chrome.storage.local.set({ [PROVIDER_SETTINGS_STORAGE_KEY]: settings }),
+      chrome.storage.session.remove(LEGACY_PROVIDER_API_KEY_STORAGE_KEY),
     ]);
   },
 }));

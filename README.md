@@ -10,7 +10,7 @@ This repo is intentionally starting small. The current scaffold now proves the c
 - background service worker
 - content script
 - DOM-native page extraction
-- React side panel for task entry and provider settings
+- React side panel for task entry and local Ollama setup
 - first observe → plan → act → verify loop against the active tab
 - live step-by-step updates streamed to the side panel over a dedicated per-run extension Port
 - runtime site access model shaped for a real alpha extension
@@ -26,9 +26,9 @@ Related docs:
 
 Fast Browser is a three-part extension:
 
-- `background service worker`: owns orchestration, provider calls, action execution, cancellation, and run state
+- `background service worker`: owns orchestration, Ollama calls, action execution, cancellation, and run state
 - `content script`: snapshots the active page, resolves refs, and performs DOM-native page interactions
-- `side panel`: collects the task, provider settings, and live phase updates
+- `side panel`: collects the task, local model settings, and live phase updates
 
 The current DAG is a single-run observe → plan → act → verify loop. Each run gets its own Port session, and the UI derives from streamed phase events instead of polling.
 
@@ -61,7 +61,7 @@ This is not a full browser agent yet. The current implementation is focused on t
 The working loop today is:
 
 1. Open the side panel
-2. Configure a provider (`Ollama`, `OpenAI-compatible`, or `Anthropic`)
+2. Make sure Ollama is running locally
 3. Enter a task
 4. Run the loop on the active tab
 5. Observe a structured page snapshot
@@ -87,7 +87,7 @@ Each run now uses its own Port session, server events carry monotonically increa
 
 - The extension uses a Manifest V3 service worker and a strict extension-page CSP.
 - User tasks and model outputs are treated as untrusted input.
-- Provider API keys are kept in session storage, while non-secret model settings persist locally.
+- Fast Browser is now Ollama-only, so no third-party API key is required for the alpha flow.
 - Page refs are snapshot-local and expire after every re-extraction.
 - The action surface is intentionally small so the worker can reject anything outside the safe set.
 - Sensitive fields are detected in the content script and type actions against them are blocked.
@@ -95,17 +95,25 @@ Each run now uses its own Port session, server events carry monotonically increa
 - API access to sites is shaped around the active tab plus optional runtime-granted site access, instead of a permanently broad install-time permission model.
 - Prompt injection defenses are still a work in progress, so the current build is not suitable for high-risk autonomous browsing without more hardening.
 
-## Multi-provider support
+## Local Ollama setup
 
-Yes, multi-provider support includes Ollama in this first action-loop slice.
+Fast Browser now targets local Ollama only. That makes the alpha much simpler to install, cheaper to use, and easier to reason about.
 
-Current provider shape:
+Quick start:
 
-- Anthropic
-- OpenAI-compatible APIs
-- Ollama
+```bash
+ollama serve
+ollama pull llama3.2:3b
+```
 
-The current implementation wires live calls for all three paths. The default local-friendly setup is Ollama using the OpenAI-compatible chat completions endpoint.
+Then reload the extension and choose `llama3.2:3b` in the side panel.
+
+If you want a different free local model later, install it first and then type or select it in the model setup:
+
+```bash
+ollama pull qwen2.5:3b
+ollama pull gemma3:4b
+```
 
 What is still intentionally missing:
 
@@ -123,6 +131,7 @@ What is still intentionally missing:
 - The current action set is intentionally narrow and does not yet cover form controls beyond typing into the active target.
 - The prompt format expects one JSON action per step, so multi-step plans are not yet supported.
 - The current security model reduces risk, but it does not fully solve prompt injection or malicious page content.
+- The side panel only knows which models are ready if your local Ollama server is reachable from the extension.
 
 ## Production Host Permissions
 
@@ -149,7 +158,7 @@ npm install
 npm run dev
 ```
 
-Then load the built extension in Chrome from `dist/`.
+Then load the built extension in Chrome from `dist/`, make sure `ollama serve` is running, and reload the extension after installing any new model.
 
 ## Package For Chrome
 

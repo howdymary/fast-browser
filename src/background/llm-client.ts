@@ -7,35 +7,35 @@ export interface LlmMessage {
 }
 
 const REQUEST_TIMEOUT_MS = 30_000;
-const ANTHROPIC_API_VERSION = '2023-06-01';
 
-function isOpenAiChatCompletionsEndpoint(endpoint: string): boolean {
-  return /\/chat\/completions\/?$/i.test(endpoint);
-}
-
-function httpErrorMessage(provider: ProviderSettings['provider'], status: number): string {
-  if (status === 401) {
-    return `${provider}: Invalid API key`;
+function httpErrorMessage(status: number, details: string | null): string {
+  if (status === 404 && details && /model ['"].+['"] not found/i.test(details)) {
+    const match = details.match(/model ['"]([^'"]+)['"] not found/i);
+    const model = match?.[1] ?? 'that model';
+    return `ollama: Model "${model}" is not installed locally. Run "ollama pull ${model}" and try again.`;
   }
-  if (provider === 'openai' && status === 404) {
-    return 'openai: Endpoint not found (404). Fast Browser expects the OpenAI Responses API endpoint, usually https://api.openai.com/v1/responses';
+  if (status === 404) {
+    return 'ollama: Endpoint not found (404). Check the Ollama endpoint in model setup.';
   }
   if (status === 429) {
-    return `${provider}: Rate limited — wait and retry`;
+    return 'ollama: Rate limited — wait and retry.';
   }
   if (status >= 500) {
-    return `${provider}: Server error (${status})`;
+    return `ollama: Server error (${status}).`;
   }
-  return `${provider}: Request failed (${status})`;
+  return `ollama: Request failed (${status})`;
 }
 
 async function readErrorDetails(response: Response): Promise<string | null> {
   const jsonSource = typeof response.clone === 'function' ? response.clone() : response;
   try {
     const data = await jsonSource.json() as {
-      error?: { message?: string };
+      error?: string | { message?: string };
       message?: string;
     };
+    if (typeof data.error === 'string') {
+      return data.error.trim() || null;
+    }
     return data.error?.message?.trim() || data.message?.trim() || null;
   } catch {
     const textSource = typeof response.clone === 'function' ? response.clone() : response;
@@ -79,114 +79,44 @@ export async function callLlm(
   const timeout = createTimeoutSignal(REQUEST_TIMEOUT_MS);
   const combined = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
 
-  if (settings.provider === 'anthropic') {
-    try {
-      const response = await fetch(getProviderEndpoint(settings), {
-        method: 'POST',
-        signal: combined,
-        headers: {
-          'content-type': 'application/json',
-          'x-api-key': settings.apiKey,
-          'anthropic-version': ANTHROPIC_API_VERSION,
-        },
-        body: JSON.stringify({
-          model: settings.model,
-          max_tokens: 400,
-          system: systemPrompt,
-          messages: messages.map((message) => ({ role: message.role, content: message.content })),
-        }),
-      });
-
-      if (!response.ok) {
-        const details = await readErrorDetails(response);
-        const base = httpErrorMessage(settings.provider, response.status);
-        throw new Error(details ? `${base}: ${details}` : base);
-      }
-
-      const data = await response.json() as {
-        content?: Array<{ text?: string }>;
-      };
-      const text = data.content?.[0]?.text?.trim();
-      if (!text) {
-        throw new Error('Anthropic returned an empty response.');
-      }
-      return text;
-    } catch (error) {
-      if (timeout.timedOut() && !(signal?.aborted ?? false)) {
-        throw new Error(`anthropic: ${timeout.error.message}`);
-      }
-      throw error;
-    } finally {
-      timeout.clear();
-    }
-  }
-
   try {
-    const endpoint = getProviderEndpoint(settings);
-    const usesChatCompletions = settings.provider === 'ollama'
-      || (settings.provider === 'openai' && isOpenAiChatCompletionsEndpoint(endpoint));
-
-    const response = await fetch(endpoint, {
+    const response = await fetch(getProviderEndpoint(settings), {
       method: 'POST',
       signal: combined,
       headers: {
         'content-type': 'application/json',
-        ...(settings.provider === 'ollama' ? {} : { authorization: `Bearer ${settings.apiKey}` }),
       },
-      body: JSON.stringify(
-        usesChatCompletions
-          ? {
-              model: settings.model,
-              temperature: 0,
-              max_tokens: 400,
-              messages: [
-                { role: 'system', content: systemPrompt },
-                ...messages,
-              ],
-            }
-          : {
-              model: settings.model,
-              max_output_tokens: 400,
-              input: [
-                {
-                  role: 'system',
-                  content: [{ type: 'input_text', text: systemPrompt }],
-                },
-                ...messages.map((message) => ({
-                  role: message.role,
-                  content: [{ type: 'input_text', text: message.content }],
-                })),
-              ],
-            },
-      ),
+      body: JSON.stringify({
+        model: settings.model,
+        temperature: 0,
+        max_tokens: 400,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...messages,
+        ],
+      }),
     });
 
     if (!response.ok) {
       const details = await readErrorDetails(response);
-      const base = httpErrorMessage(settings.provider, response.status);
-      throw new Error(details ? `${base}: ${details}` : base);
+      const base = httpErrorMessage(response.status, details);
+      throw new Error(details && !base.includes(details) ? `${base}: ${details}` : base);
     }
 
     const data = await response.json() as {
-      output_text?: string;
       choices?: Array<{ message?: { content?: string } }>;
-      output?: Array<{
-        content?: Array<{ type?: string; text?: string }>;
-      }>;
     };
-    const text = usesChatCompletions
-      ? data.choices?.[0]?.message?.content?.trim()
-      : (
-          data.output_text?.trim()
-          || data.output?.flatMap((item) => item.content ?? []).find((item) => item.type === 'output_text' || item.type === 'text')?.text?.trim()
-        );
+    const text = data.choices?.[0]?.message?.content?.trim();
     if (!text) {
-      throw new Error(`${settings.provider} returned an empty response.`);
+      throw new Error('ollama returned an empty response.');
     }
     return text;
   } catch (error) {
     if (timeout.timedOut() && !(signal?.aborted ?? false)) {
-      throw new Error(`${settings.provider}: ${timeout.error.message}`);
+      throw new Error(`ollama: ${timeout.error.message}`);
+    }
+    if (error instanceof TypeError && /fetch/i.test(error.message)) {
+      throw new Error('ollama: Could not reach the local Ollama server. Make sure Ollama is running and the endpoint is correct.');
     }
     throw error;
   } finally {

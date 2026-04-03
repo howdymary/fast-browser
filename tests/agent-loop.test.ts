@@ -257,7 +257,7 @@ describe('runAgentLoop', () => {
     const page = makePageState({
       elements: [],
     });
-    const callModel = vi.fn().mockRejectedValueOnce(new Error('Invalid API key'));
+    const callModel = vi.fn().mockRejectedValueOnce(new Error('Model payload rejected'));
 
     await expect(
       runAgentLoop(
@@ -273,7 +273,7 @@ describe('runAgentLoop', () => {
           callModel,
         },
       ),
-    ).rejects.toThrow(/invalid api key/i);
+    ).rejects.toThrow(/model payload rejected/i);
     expect(callModel).toHaveBeenCalledTimes(1);
   });
 
@@ -282,7 +282,7 @@ describe('runAgentLoop', () => {
     const warnings: string[] = [];
     const callModel = vi
       .fn()
-      .mockRejectedValueOnce(new Error('openai: Rate limited — wait and retry'))
+      .mockRejectedValueOnce(new Error('ollama: Rate limited — wait and retry'))
       .mockResolvedValueOnce('{"action":"done","result":"Recovered","reason":"Task complete"}');
 
     const result = await runAgentLoop(

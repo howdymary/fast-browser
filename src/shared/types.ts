@@ -1,8 +1,7 @@
-export type ProviderName = 'anthropic' | 'openai' | 'ollama';
+export type ProviderName = 'ollama';
 
 export interface ProviderSettings {
   provider: ProviderName;
-  apiKey: string;
   model: string;
   baseUrl?: string;
 }

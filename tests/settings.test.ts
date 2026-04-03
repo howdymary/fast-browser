@@ -1,184 +1,138 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   DEFAULT_PROVIDER_SETTINGS,
+  fetchInstalledModelOptions,
   getProviderEndpoint,
-  getProviderModelOptions,
-  getProviderPreset,
+  getSuggestedModelOptions,
   mergeProviderSettings,
-  providerNeedsApiKey,
+  OLLAMA_DEFAULT_ENDPOINT,
   validateProviderSettings,
 } from '../src/shared/settings';
 import type { ProviderSettings } from '../src/shared/types';
 
 describe('validateProviderSettings', () => {
-  it('returns null for valid Ollama settings (no API key needed)', () => {
+  it('returns null for valid Ollama settings', () => {
     const settings: ProviderSettings = {
       provider: 'ollama',
-      apiKey: '',
       model: 'llama3.2:3b',
-      baseUrl: 'http://127.0.0.1:11434/v1/chat/completions',
+      baseUrl: OLLAMA_DEFAULT_ENDPOINT,
     };
     expect(validateProviderSettings(settings)).toBeNull();
-  });
-
-  it('returns an error for Anthropic with an empty API key', () => {
-    const settings: ProviderSettings = {
-      provider: 'anthropic',
-      apiKey: '',
-      model: 'claude-sonnet-4-20250514',
-      baseUrl: '',
-    };
-    const result = validateProviderSettings(settings);
-    expect(result).toBeTypeOf('string');
-    expect(result).toMatch(/api key/i);
-  });
-
-  it('returns an error for OpenAI with an empty API key', () => {
-    const settings: ProviderSettings = {
-      provider: 'openai',
-      apiKey: '',
-      model: 'gpt-4o',
-      baseUrl: '',
-    };
-    const result = validateProviderSettings(settings);
-    expect(result).toBeTypeOf('string');
-    expect(result).toMatch(/api key/i);
   });
 
   it('returns an error for an empty model name', () => {
     const settings: ProviderSettings = {
       provider: 'ollama',
-      apiKey: '',
       model: '   ',
-      baseUrl: 'http://127.0.0.1:11434/v1/chat/completions',
+      baseUrl: OLLAMA_DEFAULT_ENDPOINT,
     };
-    const result = validateProviderSettings(settings);
-    expect(result).toBeTypeOf('string');
-    expect(result).toMatch(/model/i);
+    expect(validateProviderSettings(settings)).toMatch(/model/i);
   });
 
-  it('returns an error for Ollama with no baseUrl', () => {
+  it('returns an error for Ollama with no endpoint', () => {
     const settings: ProviderSettings = {
       provider: 'ollama',
-      apiKey: '',
       model: 'llama3.2:3b',
       baseUrl: '',
     };
-    const result = validateProviderSettings(settings);
-    expect(result).toBeTypeOf('string');
-    expect(result).toMatch(/endpoint/i);
+    expect(validateProviderSettings(settings)).toMatch(/endpoint/i);
   });
 
   it('returns an error for a malformed base URL', () => {
     const settings: ProviderSettings = {
-      provider: 'anthropic',
-      apiKey: 'anthropic-key',
-      model: 'claude-sonnet-4-20250514',
+      provider: 'ollama',
+      model: 'llama3.2:3b',
       baseUrl: 'not-a-url',
     };
-    const result = validateProviderSettings(settings);
-    expect(result).toBeTypeOf('string');
-    expect(result).toMatch(/valid url/i);
+    expect(validateProviderSettings(settings)).toMatch(/valid url/i);
   });
 });
 
 describe('mergeProviderSettings', () => {
-  it('fills provider-specific defaults when given a partial input', () => {
-    const merged = mergeProviderSettings({ provider: 'anthropic' });
-    expect(merged.provider).toBe('anthropic');
-    expect(merged.model).toBe('claude-sonnet-4-20250514');
-    expect(merged.apiKey).toBe('');
-    expect(merged.baseUrl).toBe('https://api.anthropic.com/v1/messages');
+  it('fills Ollama defaults when given a partial input', () => {
+    const merged = mergeProviderSettings({ model: 'qwen2.5:3b' });
+    expect(merged.provider).toBe('ollama');
+    expect(merged.model).toBe('qwen2.5:3b');
+    expect(merged.baseUrl).toBe(OLLAMA_DEFAULT_ENDPOINT);
   });
 
-  it('preserves all values when given a full input', () => {
+  it('preserves all valid values when given a full input', () => {
     const full: ProviderSettings = {
-      provider: 'openai',
-      apiKey: 'sk-test-key',
-      model: 'gpt-4o',
-      baseUrl: 'https://custom.endpoint/v1',
+      provider: 'ollama',
+      model: 'qwen2.5:7b',
+      baseUrl: 'http://localhost:11434/v1/chat/completions',
     };
-    const merged = mergeProviderSettings(full);
-    expect(merged).toEqual(full);
+    expect(mergeProviderSettings(full)).toEqual(full);
   });
 
   it('returns defaults when given undefined', () => {
-    const merged = mergeProviderSettings(undefined);
-    expect(merged).toEqual(DEFAULT_PROVIDER_SETTINGS);
+    expect(mergeProviderSettings(undefined)).toEqual(DEFAULT_PROVIDER_SETTINGS);
+  });
+
+  it('migrates old saved provider data back to Ollama defaults', () => {
+    const merged = mergeProviderSettings({
+      provider: 'openai',
+      apiKey: 'sk-test',
+      model: 'llama3.2:3b',
+      baseUrl: '',
+    });
+
+    expect(merged.provider).toBe('ollama');
+    expect(merged.baseUrl).toBe(OLLAMA_DEFAULT_ENDPOINT);
   });
 });
 
-describe('provider endpoint helpers', () => {
-  it('defaults first-run settings to the OpenAI path', () => {
-    expect(DEFAULT_PROVIDER_SETTINGS.provider).toBe('openai');
-    expect(DEFAULT_PROVIDER_SETTINGS.model).toBe('gpt-4.1-mini');
-    expect(DEFAULT_PROVIDER_SETTINGS.baseUrl).toBe('https://api.openai.com/v1/responses');
-  });
-
-  it('returns provider presets for setup shortcuts', () => {
-    expect(getProviderPreset('anthropic')).toEqual({
-      provider: 'anthropic',
-      apiKey: '',
-      model: 'claude-sonnet-4-20250514',
-      baseUrl: 'https://api.anthropic.com/v1/messages',
+describe('Ollama helper functions', () => {
+  it('defaults first-run settings to the local Ollama path', () => {
+    expect(DEFAULT_PROVIDER_SETTINGS).toEqual({
+      provider: 'ollama',
+      model: 'llama3.2:3b',
+      baseUrl: OLLAMA_DEFAULT_ENDPOINT,
     });
   });
 
-  it('returns provider-specific model options for the dropdown', () => {
-    expect(getProviderModelOptions('openai')[0]?.value).toBe('gpt-4.1-mini');
-    expect(getProviderModelOptions('ollama').some((option) => option.value === 'qwen2.5:3b')).toBe(true);
-    expect(getProviderModelOptions('ollama').some((option) => option.value === 'llama3.2:3b')).toBe(true);
+  it('returns suggested free model options', () => {
+    const models = getSuggestedModelOptions();
+    expect(models.some((option) => option.value === 'llama3.2:3b')).toBe(true);
+    expect(models.some((option) => option.value === 'qwen2.5:7b')).toBe(true);
   });
 
-  it('uses the provider defaults when no base URL is supplied', () => {
-    expect(
-      getProviderEndpoint({
-        provider: 'anthropic',
-        apiKey: 'anthropic-key',
-        model: 'claude-sonnet-4-20250514',
-      }),
-    ).toBe('https://api.anthropic.com/v1/messages');
-
-    expect(
-      getProviderEndpoint({
-        provider: 'openai',
-        apiKey: 'openai-key',
-        model: 'gpt-4o',
-      }),
-    ).toBe('https://api.openai.com/v1/responses');
-
+  it('uses the default Ollama endpoint when none is supplied', () => {
     expect(
       getProviderEndpoint({
         provider: 'ollama',
-        apiKey: '',
         model: 'llama3.2:3b',
       }),
-    ).toBe('http://127.0.0.1:11434/v1/chat/completions');
+    ).toBe(OLLAMA_DEFAULT_ENDPOINT);
   });
 
-  it('reports which providers require an API key', () => {
-    expect(providerNeedsApiKey({
-      provider: 'ollama',
-      apiKey: '',
-      model: 'llama3.2:3b',
-    })).toBe(false);
-
-    expect(providerNeedsApiKey({
-      provider: 'anthropic',
-      apiKey: 'anthropic-key',
-      model: 'claude-sonnet-4-20250514',
-    })).toBe(true);
-  });
-
-  it('migrates the old OpenAI chat endpoint to responses for saved settings', () => {
-    const merged = mergeProviderSettings({
-      provider: 'openai',
-      apiKey: 'openai-key',
-      model: 'gpt-4o',
-      baseUrl: 'https://api.openai.com/v1/chat/completions',
+  it('reads installed models from the Ollama tags endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        models: [
+          { name: 'llama3.2:3b' },
+          { name: 'qwopus-q4km-quiet:latest' },
+        ],
+      }),
     });
 
-    expect(merged.baseUrl).toBe('https://api.openai.com/v1/responses');
+    const result = await fetchInstalledModelOptions(fetchMock);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(result.map((item) => item.value)).toEqual([
+      'llama3.2:3b',
+      'qwopus-q4km-quiet:latest',
+    ]);
+  });
+
+  it('throws a helpful error when Ollama is unreachable', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+    });
+
+    await expect(fetchInstalledModelOptions(fetchMock)).rejects.toThrow(/could not reach ollama/i);
   });
 });

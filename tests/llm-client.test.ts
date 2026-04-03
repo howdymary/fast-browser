@@ -1,32 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { callLlm } from '../src/background/llm-client';
+import { OLLAMA_DEFAULT_ENDPOINT } from '../src/shared/settings';
 import type { ProviderSettings } from '../src/shared/types';
 
-function makeSettings(provider: ProviderSettings['provider']): ProviderSettings {
-  if (provider === 'anthropic') {
-    return {
-      provider,
-      apiKey: 'anthropic-key',
-      model: 'claude-sonnet-4-20250514',
-      baseUrl: 'https://api.anthropic.com/v1/messages',
-    };
-  }
-
-  if (provider === 'openai') {
-    return {
-      provider,
-      apiKey: 'openai-key',
-      model: 'gpt-4o',
-      baseUrl: 'https://api.openai.com/v1/responses',
-    };
-  }
-
+function makeSettings(model = 'llama3.2:3b'): ProviderSettings {
   return {
-    provider,
-    apiKey: '',
-    model: 'llama3.2',
-    baseUrl: 'http://127.0.0.1:11434/v1/chat/completions',
+    provider: 'ollama',
+    model,
+    baseUrl: OLLAMA_DEFAULT_ENDPOINT,
   };
 }
 
@@ -36,79 +18,21 @@ afterEach(() => {
 });
 
 describe('callLlm', () => {
-  it('returns trimmed Anthropiс content and sends max_tokens', async () => {
+  it('returns Ollama chat completions content and sends max_tokens', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: vi.fn().mockResolvedValue({
-        content: [{ text: '  hello from anthropic  ' }],
+        choices: [{ message: { content: 'hello from ollama' } }],
       }),
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const settings = makeSettings('anthropic');
-    const result = await callLlm('System prompt', [{ role: 'user', content: 'Hi' }], settings);
+    const result = await callLlm('System prompt', [{ role: 'user', content: 'Hi' }], makeSettings());
 
-    expect(result).toBe('hello from anthropic');
-    const [, init] = fetchMock.mock.calls[0];
-    expect(init).toMatchObject({
-      method: 'POST',
-      headers: expect.objectContaining({
-        'content-type': 'application/json',
-        'x-api-key': settings.apiKey,
-        'anthropic-version': '2023-06-01',
-      }),
-    });
-    expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({
-      model: settings.model,
-      max_tokens: 400,
-      system: 'System prompt',
-      messages: [{ role: 'user', content: 'Hi' }],
-    });
-  });
-
-  it('returns OpenAI responses content and sends structured input with max_output_tokens', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: vi.fn().mockResolvedValue({
-        output_text: '  hello from openai  ',
-      }),
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    const settings = makeSettings('openai');
-    const result = await callLlm('System prompt', [{ role: 'user', content: 'Hi' }], settings);
-
-    expect(result).toBe('hello from openai');
+    expect(result).toBe('hello from ollama');
     const [, init] = fetchMock.mock.calls[0];
     expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({
-      model: settings.model,
-      max_output_tokens: 400,
-      input: [
-        { role: 'system', content: [{ type: 'input_text', text: 'System prompt' }] },
-        { role: 'user', content: [{ type: 'input_text', text: 'Hi' }] },
-      ],
-    });
-  });
-
-  it('still supports OpenAI-compatible chat completions endpoints', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: vi.fn().mockResolvedValue({
-        choices: [{ message: { content: 'legacy hello from openai' } }],
-      }),
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    const settings = {
-      ...makeSettings('openai'),
-      baseUrl: 'https://api.openai.com/v1/chat/completions',
-    };
-    const result = await callLlm('System prompt', [{ role: 'user', content: 'Hi' }], settings);
-
-    expect(result).toBe('legacy hello from openai');
-    const [, init] = fetchMock.mock.calls[0];
-    expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({
-      model: settings.model,
+      model: 'llama3.2:3b',
       max_tokens: 400,
       temperature: 0,
       messages: [
@@ -118,36 +42,18 @@ describe('callLlm', () => {
     });
   });
 
-  it('sends max_tokens for Ollama-compatible chat requests too', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: vi.fn().mockResolvedValue({
-        choices: [{ message: { content: 'hello from ollama' } }],
-      }),
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    const settings = makeSettings('ollama');
-    await callLlm('System prompt', [{ role: 'user', content: 'Hi' }], settings);
-
-    const [, init] = fetchMock.mock.calls[0];
-    expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({
-      model: settings.model,
-      max_tokens: 400,
-      temperature: 0,
-    });
-  });
-
-  it('throws a descriptive invalid API key error for 401', async () => {
+  it('throws a helpful model install error when Ollama reports model not found', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false,
-      status: 401,
-      json: vi.fn().mockResolvedValue({}),
+      status: 404,
+      json: vi.fn().mockResolvedValue({
+        error: { message: "model 'qwen2.5:7b' not found" },
+      }),
     }));
 
     await expect(
-      callLlm('System prompt', [{ role: 'user', content: 'Hi' }], makeSettings('openai')),
-    ).rejects.toThrow(/invalid api key/i);
+      callLlm('System prompt', [{ role: 'user', content: 'Hi' }], makeSettings('qwen2.5:7b')),
+    ).rejects.toThrow(/ollama pull qwen2\.5:7b/i);
   });
 
   it('throws a descriptive rate limit error for 429', async () => {
@@ -158,7 +64,7 @@ describe('callLlm', () => {
     }));
 
     await expect(
-      callLlm('System prompt', [{ role: 'user', content: 'Hi' }], makeSettings('openai')),
+      callLlm('System prompt', [{ role: 'user', content: 'Hi' }], makeSettings()),
     ).rejects.toThrow(/rate limited/i);
   });
 
@@ -170,50 +76,26 @@ describe('callLlm', () => {
     }));
 
     await expect(
-      callLlm('System prompt', [{ role: 'user', content: 'Hi' }], makeSettings('openai')),
-    ).rejects.toThrow(/server error \(500\)/i);
-  });
-
-  it('throws a descriptive endpoint error for OpenAI 404s', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: false,
-      status: 404,
-      json: vi.fn().mockResolvedValue({ error: { message: 'No such endpoint' } }),
-    }));
-
-    await expect(
-      callLlm('System prompt', [{ role: 'user', content: 'Hi' }], makeSettings('openai')),
-    ).rejects.toThrow(/responses api endpoint/i);
-  });
-
-  it('surfaces OpenAI 400 body errors for invalid request payloads', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: false,
-      status: 400,
-      json: vi.fn().mockResolvedValue({ error: { message: 'Invalid input structure' } }),
-    }));
-
-    await expect(
-      callLlm('System prompt', [{ role: 'user', content: 'Hi' }], makeSettings('openai')),
-    ).rejects.toThrow(/invalid input structure/i);
+      callLlm('System prompt', [{ role: 'user', content: 'Hi' }], makeSettings()),
+    ).rejects.toThrow(/server error/i);
   });
 
   it('propagates timeout failures with a descriptive error', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new DOMException('Request timed out', 'TimeoutError')));
 
     await expect(
-      callLlm('System prompt', [{ role: 'user', content: 'Hi' }], makeSettings('ollama')),
+      callLlm('System prompt', [{ role: 'user', content: 'Hi' }], makeSettings()),
     ).rejects.toThrow(/timed out/i);
   });
 
-  it('throws when a provider returns an empty response body', async () => {
+  it('throws when Ollama returns an empty response body', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
-      json: vi.fn().mockResolvedValue({ output: [] }),
+      json: vi.fn().mockResolvedValue({ choices: [] }),
     }));
 
     await expect(
-      callLlm('System prompt', [{ role: 'user', content: 'Hi' }], makeSettings('openai')),
+      callLlm('System prompt', [{ role: 'user', content: 'Hi' }], makeSettings()),
     ).rejects.toThrow(/empty response/i);
   });
 });
