@@ -576,16 +576,11 @@ export function App(): ReactElement {
         <section className="rounded-[30px] border border-white/10 bg-[radial-gradient(circle_at_top,rgba(251,146,60,0.14),transparent_35%),linear-gradient(180deg,rgba(17,24,39,0.98),rgba(11,15,25,0.98))] p-5 shadow-[0_24px_60px_rgba(2,6,23,0.45)]">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="max-w-xl">
-              <div className="flex items-center gap-3">
-                <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-orange-300/25 bg-orange-400/10 text-sm font-semibold text-orange-100">
-                  FB
-                </div>
-                <div className="space-y-1">
-                  <p className="text-[11px] uppercase tracking-[0.28em] text-orange-200/80">Fast Browser</p>
-                  <h1 className="text-2xl font-semibold tracking-tight text-white">
-                    Ask me to use the current page
-                  </h1>
-                </div>
+              <div className="space-y-1">
+                <p className="text-[11px] uppercase tracking-[0.28em] text-orange-200/80">Fast Browser</p>
+                <h1 className="text-2xl font-semibold tracking-tight text-white">
+                  Ask me to use the current page
+                </h1>
               </div>
               <p className="mt-3 max-w-lg text-sm leading-6 text-slate-300">
                 Tell Fast Browser what you want done on this tab. It reads the page, chooses the next action,

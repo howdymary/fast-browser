@@ -41,6 +41,24 @@ Rules:
 8. If you think multiple steps are needed, return only the immediate next action object.
 `.trim();
 
+const READ_ONLY_SYSTEM_PROMPT = `
+You are Fast Browser, a browser agent answering from the current page snapshot.
+
+The user's task is read-only. Do not click, type, scroll, wait, or navigate.
+
+Respond with exactly one JSON object and nothing else.
+
+Use one of these:
+{"action":"done","result":"Three concise bullets summarizing the page.","reason":"Summarized the page"}
+{"action":"ask_human","question":"I do not have enough page information to answer accurately.","reason":"Need more context"}
+
+Rules:
+1. Answer only from the current page snapshot and visible text you were given.
+2. If the page snapshot is sufficient, return done immediately.
+3. Do not propose extra browsing actions for a summary or explanation request.
+4. Output must be a single top-level action object with an "action" field.
+`.trim();
+
 export interface AgentLoopDependencies {
   signal: AbortSignal;
   getPageState: () => Promise<PageState>;
@@ -129,6 +147,35 @@ function formatHistory(history: AgentAction[]): string {
     return 'No prior actions.';
   }
   return history.map((action, index) => `${index + 1}. ${JSON.stringify(action)}`).join('\n');
+}
+
+function isReadOnlyTask(task: string): boolean {
+  const normalized = task.toLowerCase();
+  const readOnlyPatterns = [
+    /\bsummar(?:ize|y)\b/,
+    /\bexplain\b/,
+    /\bdescribe\b/,
+    /\bwhat does this page say\b/,
+    /\bwhat is on this page\b/,
+    /\blist\b.+\b(bullets|bullet points|headings|key points)\b/,
+    /\bextract\b.+\b(title|heading|summary|main points)\b/,
+  ];
+  const interactivePatterns = [
+    /\bclick\b/,
+    /\btype\b/,
+    /\bfill\b/,
+    /\bsearch\b/,
+    /\blog ?in\b/,
+    /\bsign ?in\b/,
+    /\bnavigate\b/,
+    /\bopen\b.+\b(tab|page|link|menu|dialog)\b/,
+    /\bscroll\b/,
+    /\bfocus\b/,
+  ];
+
+  const looksReadOnly = readOnlyPatterns.some((pattern) => pattern.test(normalized));
+  const looksInteractive = interactivePatterns.some((pattern) => pattern.test(normalized));
+  return looksReadOnly && !looksInteractive;
 }
 
 function extractJsonCandidate(raw: string): string {
@@ -429,12 +476,13 @@ async function callModelWithRetry(
   deps: AgentLoopDependencies,
   step: number,
   feed: ActionFeedEntry[],
+  systemPrompt: string,
   messages: LlmMessage[],
   settings: ProviderSettings,
   pageState: PageState,
 ): Promise<string> {
   try {
-    return await deps.callModel(AGENT_SYSTEM_PROMPT, messages, settings, deps.signal);
+    return await deps.callModel(systemPrompt, messages, settings, deps.signal);
   } catch (error) {
     if (deps.signal.aborted || !isTransientModelError(error)) {
       throw error;
@@ -451,7 +499,7 @@ async function callModelWithRetry(
 
     await abortableDelay(2000, deps.signal);
     throwIfAborted(deps.signal);
-    return deps.callModel(AGENT_SYSTEM_PROMPT, messages, settings, deps.signal);
+    return deps.callModel(systemPrompt, messages, settings, deps.signal);
   }
 }
 
@@ -465,6 +513,7 @@ export async function runAgentLoop(
       : 6;
     const feed: ActionFeedEntry[] = [];
     const history: AgentAction[] = [];
+    const readOnlyTask = isReadOnlyTask(options.task);
 
     await emitEvent(deps, {
       step: 0,
@@ -498,6 +547,7 @@ export async function runAgentLoop(
         deps,
         step,
         feed,
+        readOnlyTask ? READ_ONLY_SYSTEM_PROMPT : AGENT_SYSTEM_PROMPT,
         [
           {
             role: 'user',

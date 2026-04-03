@@ -446,4 +446,35 @@ describe('runAgentLoop', () => {
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/Stopped after 1 steps/i);
   });
+
+  it('uses a read-only summary prompt for summarize tasks and finishes without actions', async () => {
+    const page = makePageState({
+      visibleText: 'Fast Browser helps automate browser tasks from natural language.',
+      elements: [],
+    });
+    const callModel = vi.fn().mockResolvedValue('{"action":"done","result":"- Automates browser tasks\\n- Uses natural language\\n- Runs in Chrome","reason":"Summarized page"}');
+
+    const result = await runAgentLoop(
+      {
+        task: 'Summarize this page in 3 bullets.',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi.fn().mockResolvedValue(page),
+        executeAction: vi.fn(),
+        navigate: vi.fn(),
+        callModel,
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.finalMessage).toMatch(/automates browser tasks/i);
+    expect(callModel).toHaveBeenCalledWith(
+      expect.stringContaining('The user\'s task is read-only. Do not click, type, scroll, wait, or navigate.'),
+      expect.any(Array),
+      DEFAULT_PROVIDER_SETTINGS,
+      expect.anything(),
+    );
+  });
 });
