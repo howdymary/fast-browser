@@ -9,6 +9,7 @@ import type {
 } from '../shared/messages';
 import {
   getProviderEndpoint,
+  getProviderModelOptions,
   getProviderPreset,
   providerNeedsApiKey,
   validateProviderSettings,
@@ -194,6 +195,7 @@ export function App(): ReactElement {
   const [showSetup, setShowSetup] = useState(false);
   const [showAdvancedSetup, setShowAdvancedSetup] = useState(false);
   const [showAdvancedControls, setShowAdvancedControls] = useState(false);
+  const [showCustomModelInput, setShowCustomModelInput] = useState(false);
 
   const runnerPortRef = useRef<chrome.runtime.Port | null>(null);
   const currentRunIdRef = useRef<string | null>(null);
@@ -245,6 +247,14 @@ export function App(): ReactElement {
 
   const statusLabel = useMemo(() => statusLabelForPhase(phase), [phase]);
   const runInFlight = currentRunId !== null;
+  const modelOptions = useMemo(
+    () => getProviderModelOptions(settings.provider),
+    [settings.provider],
+  );
+  const selectedModelOption = useMemo(
+    () => modelOptions.find((option) => option.value === settings.model) ?? null,
+    [modelOptions, settings.model],
+  );
   const providerValidationError = useMemo(
     () => validateProviderSettings(settings),
     [settings],
@@ -257,6 +267,10 @@ export function App(): ReactElement {
   const showSetupCard = showSetup || Boolean(providerValidationError);
   const showSiteAccessBanner = siteAccess.status === 'unsupported'
     || (siteAccess.status === 'not-granted' && (validationAttempted || Boolean(error)));
+
+  useEffect(() => {
+    setShowCustomModelInput(selectedModelOption === null);
+  }, [selectedModelOption]);
 
   function cleanupRunnerPort(options?: { disconnect?: boolean }): void {
     currentRunIdRef.current = null;
@@ -442,6 +456,20 @@ export function App(): ReactElement {
       ...preset,
       apiKey: settings.apiKey,
     });
+    setShowCustomModelInput(false);
+  }
+
+  function handleModelSelection(value: string): void {
+    if (value === '__custom__') {
+      setShowCustomModelInput(true);
+      if (selectedModelOption) {
+        updateSettings({ model: '' });
+      }
+      return;
+    }
+
+    setShowCustomModelInput(false);
+    updateSettings({ model: value });
   }
 
   async function handleSaveSetup(): Promise<void> {
@@ -559,17 +587,36 @@ export function App(): ReactElement {
 
               <div className="mt-4 grid gap-3 md:grid-cols-2">
                 <div>
-                  <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="model-input">
+                  <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="model-select">
                     Model
                   </label>
-                  <input
-                    id="model-input"
+                  <select
+                    id="model-select"
                     className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 text-sm text-slate-50 outline-none focus:border-orange-300/60"
-                    value={settings.model}
-                    onChange={(event) => updateSettings({ model: event.target.value })}
-                    placeholder="gpt-4.1-mini, claude-sonnet-4, llama3.2"
+                    value={selectedModelOption ? selectedModelOption.value : '__custom__'}
+                    onChange={(event) => handleModelSelection(event.target.value)}
                     disabled={runInFlight}
-                  />
+                  >
+                    {modelOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                    <option value="__custom__">Custom model…</option>
+                  </select>
+                  <p className="mt-2 text-xs text-slate-500">
+                    {selectedModelOption?.helper ?? 'Type any compatible model name if it is not in the list.'}
+                  </p>
+                  {showCustomModelInput ? (
+                    <input
+                      id="model-input"
+                      className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 text-sm text-slate-50 outline-none focus:border-orange-300/60"
+                      value={settings.model}
+                      onChange={(event) => updateSettings({ model: event.target.value })}
+                      placeholder="Enter a custom model name"
+                      disabled={runInFlight}
+                    />
+                  ) : null}
                   {validationAttempted && formErrors.model ? (
                     <p className="mt-2 text-xs text-rose-300">{formErrors.model}</p>
                   ) : null}

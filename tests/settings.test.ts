@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_PROVIDER_SETTINGS,
   getProviderEndpoint,
+  getProviderModelOptions,
   getProviderPreset,
   mergeProviderSettings,
   providerNeedsApiKey,
@@ -122,6 +123,11 @@ describe('provider endpoint helpers', () => {
       model: 'claude-sonnet-4-20250514',
       baseUrl: 'https://api.anthropic.com/v1/messages',
     });
+  });
+
+  it('returns provider-specific model options for the dropdown', () => {
+    expect(getProviderModelOptions('openai')[0]?.value).toBe('gpt-4.1-mini');
+    expect(getProviderModelOptions('ollama').some((option) => option.value === 'qwen2.5:3b')).toBe(true);
   });
 
   it('uses the provider defaults when no base URL is supplied', () => {
