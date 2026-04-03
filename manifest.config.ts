@@ -6,6 +6,7 @@ export default defineManifest({
   version: '0.2.0',
   description: 'Open-source browser automation with natural language and DOM-native extraction.',
   permissions: ['activeTab', 'sidePanel', 'storage', 'tabs', 'scripting'],
+  host_permissions: ['http://127.0.0.1/*', 'http://localhost/*'],
   optional_host_permissions: ['http://*/*', 'https://*/*'],
   background: {
     service_worker: 'src/background/service-worker.ts',
