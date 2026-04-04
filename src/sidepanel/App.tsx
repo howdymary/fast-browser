@@ -282,12 +282,6 @@ export function App(): ReactElement {
   const runInFlight = currentRunId !== null;
   const modelOptions = useMemo(() => installedModels, [installedModels]);
   const suggestedModels = useMemo(() => getSuggestedModelOptions(), []);
-  const suggestedModelsToInstall = useMemo(
-    () => dedupeModelOptions(
-      suggestedModels.filter((option) => !modelOptions.some((installed) => installed.value === option.value)),
-    ),
-    [modelOptions, suggestedModels],
-  );
   const allModelOptions = useMemo(
     () => dedupeModelOptions([...modelOptions, ...suggestedModels]),
     [modelOptions, suggestedModels],
@@ -299,6 +293,10 @@ export function App(): ReactElement {
   const suggestedModelNames = useMemo(
     () => suggestedModels.slice(0, 8).map((option) => option.value).join(', '),
     [suggestedModels],
+  );
+  const selectedSuggestedModel = useMemo(
+    () => suggestedModels.find((option) => option.value === settings.model) ?? null,
+    [settings.model, suggestedModels],
   );
   const currentModelInstalled = useMemo(
     () => modelOptions.some((option) => option.value === settings.model.trim()),
@@ -662,28 +660,15 @@ export function App(): ReactElement {
                     <select
                       id="model-select"
                       className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 text-sm text-slate-50 outline-none focus:border-orange-300/60"
-                      value={selectedModelOption ? selectedModelOption.value : (currentModelInstalled ? settings.model : (preferredInstalledModel ?? allModelOptions[0]?.value))}
+                      value={currentModelInstalled ? settings.model : (preferredInstalledModel ?? modelOptions[0]?.value ?? '')}
                       onChange={(event) => handleModelSelection(event.target.value)}
-                      disabled={runInFlight}
+                      disabled={runInFlight || modelOptions.length === 0}
                     >
-                      {modelOptions.length > 0 ? (
-                        <optgroup label="Installed locally">
-                          {modelOptions.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </optgroup>
-                      ) : null}
-                      {suggestedModelsToInstall.length > 0 ? (
-                        <optgroup label="Free models to install">
-                          {suggestedModelsToInstall.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </optgroup>
-                      ) : null}
+                      {modelOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
                     </select>
                   ) : (
                     <div className="mt-2 rounded-2xl border border-dashed border-white/10 bg-slate-950/60 px-3 py-3 text-sm text-slate-400">
@@ -691,7 +676,7 @@ export function App(): ReactElement {
                     </div>
                   )}
                   <p className="mt-2 text-xs text-slate-500">
-                    {selectedModelOption?.helper ?? 'Choose an installed model or a free model to install, or type any local model ID below.'}
+                    {selectedModelOption?.helper ?? 'Choose one of the models already on this machine, or pick from the free catalog below.'}
                   </p>
                   <p className="mt-2 text-xs text-slate-500">
                     {installedModelStatusLabel(modelOptions, installedModelsLoading)}
@@ -699,6 +684,30 @@ export function App(): ReactElement {
                   {installedModelsError ? (
                     <p className="mt-2 text-xs text-amber-200">{installedModelsError}</p>
                   ) : null}
+                  <label className="mt-4 block text-xs font-semibold uppercase tracking-[0.2em] text-slate-400" htmlFor="free-model-select">
+                    Free model catalog
+                  </label>
+                  <select
+                    id="free-model-select"
+                    className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-3 text-sm text-slate-50 outline-none focus:border-orange-300/60"
+                    value={selectedSuggestedModel?.value ?? ''}
+                    onChange={(event) => {
+                      if (event.target.value) {
+                        handleModelSelection(event.target.value);
+                      }
+                    }}
+                    disabled={runInFlight}
+                  >
+                    <option value="">Choose from {suggestedModels.length} free Ollama models…</option>
+                    {suggestedModels.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-2 text-xs text-slate-500">
+                    This is the full free local catalog, including models that are not installed on this machine yet.
+                  </p>
                   {modelNotice ? (
                     <p className="mt-2 text-xs text-amber-200">{modelNotice}</p>
                   ) : null}
