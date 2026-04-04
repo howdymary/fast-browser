@@ -151,6 +151,68 @@ describe('runAgentLoop', () => {
     expect(warningKinds).toContain('verify');
   });
 
+  it('recovers from a page reload or rerender during an action by refreshing and replanning', async () => {
+    const firstPage = makePageState({
+      snapshotId: 'snapshot-1',
+      url: 'https://example.com/start',
+      visibleText: 'Start page',
+      elements: [
+        {
+          ref: '@e1',
+          tag: 'button',
+          role: 'button',
+          name: 'Open search',
+          inViewport: true,
+        },
+      ],
+    });
+    const refreshedPage = makePageState({
+      snapshotId: 'snapshot-2',
+      url: 'https://example.com/search',
+      visibleText: 'Search page',
+      elements: [],
+      meta: {
+        hasForm: true,
+        hasDialog: false,
+        scrollPercent: 0,
+        loadingState: 'complete',
+        elementCount: 0,
+      },
+    });
+    const warnings: string[] = [];
+    const callModel = vi
+      .fn()
+      .mockResolvedValueOnce('{"action":"click","ref":"@e1","reason":"Open search"}')
+      .mockResolvedValueOnce('{"action":"done","result":"Search page is open.","reason":"Task complete"}');
+
+    const result = await runAgentLoop(
+      {
+        task: 'Open search',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi
+          .fn<() => Promise<PageState>>()
+          .mockResolvedValueOnce(firstPage)
+          .mockResolvedValueOnce(refreshedPage),
+        executeAction: vi.fn().mockRejectedValueOnce(new Error('The page reloaded or rerendered before the action could run.')),
+        navigate: vi.fn().mockResolvedValue(undefined),
+        callModel,
+        emitEvent: async (event) => {
+          if (event.entry?.kind === 'warning') {
+            warnings.push(event.entry.message);
+          }
+        },
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(callModel).toHaveBeenCalledTimes(2);
+    expect(result.pageState?.snapshotId).toBe('snapshot-2');
+    expect(warnings.some((message) => /refreshing the snapshot and replanning/i.test(message))).toBe(true);
+  });
+
   it('asks for approval before acting on a sensitive field', async () => {
     const page = makePageState({
       elements: [

@@ -455,6 +455,20 @@ function isTransientModelError(error: unknown): boolean {
     || message.includes('temporarily unavailable');
 }
 
+function isRetryablePageChangeError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  return message.includes('page reloaded or rerendered')
+    || message.includes('page changed before the action could run')
+    || (message.includes('element') && message.includes('no longer available'))
+    || message.includes('could not connect to the page script')
+    || message.includes('message port closed before a response was received')
+    || message.includes('receiving end does not exist');
+}
+
 async function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const timeoutId = globalThis.setTimeout(() => {
@@ -742,6 +756,35 @@ export async function runAgentLoop(
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') {
           throw error;
+        }
+        if (isRetryablePageChangeError(error)) {
+          const recoveryEntry = makeFeedEntry('The page changed mid-step. Refreshing the snapshot and replanning...', 'warning');
+          feed.push(recoveryEntry);
+          await emitEvent(deps, {
+            step,
+            phase: 'verify',
+            entry: recoveryEntry,
+            pageState: currentPage,
+          });
+
+          try {
+            currentPage = await deps.getPageState();
+            throwIfAborted(deps.signal);
+            const refreshedEntry = makeFeedEntry('Got a fresh page snapshot after the page changed.', 'success');
+            feed.push(refreshedEntry);
+            await emitEvent(deps, {
+              step,
+              phase: 'verify',
+              entry: refreshedEntry,
+              pageState: currentPage,
+            });
+            continue;
+          } catch (recoveryError) {
+            if (recoveryError instanceof DOMException && recoveryError.name === 'AbortError') {
+              throw recoveryError;
+            }
+            error = recoveryError;
+          }
         }
         const message = error instanceof Error ? error.message : 'Unknown action failure.';
         const errorEntry = makeFeedEntry(message, 'error');

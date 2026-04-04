@@ -82,7 +82,7 @@ describe('executeAction', () => {
         'snapshot-2',
         makeSnapshot('snapshot-1', [['@e1', button]]),
       ),
-    ).rejects.toThrow(/page changed/i);
+    ).rejects.toThrow(/page reloaded|page changed/i);
   });
 
   it('blocks typing into sensitive fields', async () => {

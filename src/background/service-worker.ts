@@ -73,6 +73,18 @@ function isMissingReceiverError(error: unknown): boolean {
   return /receiving end does not exist/i.test(message);
 }
 
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isRetryableContentScriptError(error: unknown): boolean {
+  const message = getErrorMessage(error);
+  return /receiving end does not exist/i.test(message)
+    || /message port closed before a response was received/i.test(message)
+    || /frame .* was removed/i.test(message)
+    || /the tab was closed/i.test(message);
+}
+
 async function pingContentScript(tabId: number): Promise<boolean> {
   try {
     const response = await chrome.tabs.sendMessage(tabId, {
@@ -127,6 +139,42 @@ async function ensureActiveTabAccess(tabId: number, signal?: AbortSignal): Promi
   }
 }
 
+async function delayForContentScript(signal?: AbortSignal): Promise<void> {
+  if (signal) {
+    await abortableDelay(CONTENT_SCRIPT_READY_DELAY_MS * 2, signal);
+    return;
+  }
+  await new Promise((resolve) => globalThis.setTimeout(resolve, CONTENT_SCRIPT_READY_DELAY_MS * 2));
+}
+
+async function sendContentMessage<ResponseType>(
+  tabId: number,
+  request: ContentMessage,
+  signal?: AbortSignal,
+): Promise<ResponseType> {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (signal) {
+      throwIfAborted(signal);
+    }
+
+    await ensureActiveTabAccess(tabId, signal);
+
+    try {
+      return await chrome.tabs.sendMessage(tabId, request) as ResponseType;
+    } catch (error) {
+      lastError = error;
+      if (attempt === 1 || !isRetryableContentScriptError(error)) {
+        throw error;
+      }
+      await delayForContentScript(signal);
+    }
+  }
+
+  throw lastError ?? new Error('The page script did not respond.');
+}
+
 async function extractActivePageState(
   tabId: number,
   task: string | undefined,
@@ -135,15 +183,11 @@ async function extractActivePageState(
   if (signal) {
     throwIfAborted(signal);
   }
-  await ensureActiveTabAccess(tabId, signal);
-  if (signal) {
-    throwIfAborted(signal);
-  }
   const request: ContentExtractRequest = {
     type: 'FAST_BROWSER_EXTRACT_PAGE_STATE',
     task,
   };
-  const response = await chrome.tabs.sendMessage(tabId, request) as ContentExtractResponse;
+  const response = await sendContentMessage<ContentExtractResponse>(tabId, request, signal);
   if (signal) {
     throwIfAborted(signal);
   }
@@ -160,14 +204,12 @@ async function executeContentAction(
   signal: AbortSignal,
 ): Promise<void> {
   throwIfAborted(signal);
-  await ensureActiveTabAccess(tabId, signal);
-  throwIfAborted(signal);
   const request: ContentExecuteRequest = {
     type: 'FAST_BROWSER_EXECUTE_ACTION',
     action,
     snapshotId,
   };
-  const response = await chrome.tabs.sendMessage(tabId, request) as ContentExecuteResponse;
+  const response = await sendContentMessage<ContentExecuteResponse>(tabId, request, signal);
   throwIfAborted(signal);
   if (!response.ok) {
     throw new Error(response.error ?? 'The content script could not execute the action.');

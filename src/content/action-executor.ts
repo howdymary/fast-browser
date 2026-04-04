@@ -8,7 +8,7 @@ export interface SnapshotCache {
 
 function assertFreshSnapshot(expectedSnapshotId: string, snapshot: SnapshotCache | null): SnapshotCache {
   if (!snapshot || snapshot.snapshotId !== expectedSnapshotId) {
-    throw new Error('The page changed before the action could run. Refresh the snapshot and try again.');
+    throw new Error('The page reloaded or rerendered before the action could run.');
   }
   return snapshot;
 }
