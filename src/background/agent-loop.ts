@@ -381,6 +381,37 @@ function isExecutableAction(action: AgentAction): action is ExecutableAction {
     || action.action === 'wait';
 }
 
+const RISKY_CLICK_NAME_RE = /\b(sign in|log in|login|continue|submit|authorize|approve|confirm|delete|remove|purchase|pay|checkout|place order|transfer|send)\b/i;
+const AUTH_CONTEXT_RE = /\b(sign in|log in|login|password|two-factor|verification|account)\b/i;
+const PAYMENT_CONTEXT_RE = /\b(payment|checkout|card|billing|purchase|order|transfer|bank)\b/i;
+const DESTRUCTIVE_CONTEXT_RE = /\b(delete|remove|erase|destroy|unsubscribe|cancel plan)\b/i;
+
+function isHighRiskClickTarget(
+  target: PageState['elements'][number] | undefined,
+  pageState: PageState,
+): boolean {
+  if (!target) {
+    return false;
+  }
+
+  const haystack = `${target.name} ${target.context ?? ''}`.trim();
+  if (!RISKY_CLICK_NAME_RE.test(haystack)) {
+    return false;
+  }
+
+  const sameContextElements = pageState.elements.filter((element) => (
+    (element.context ?? '') === (target.context ?? '')
+  ));
+  const pageHasSensitiveField = pageState.elements.some((element) => element.sensitive);
+  const contextHasSensitiveField = sameContextElements.some((element) => element.sensitive);
+
+  return AUTH_CONTEXT_RE.test(haystack)
+    || PAYMENT_CONTEXT_RE.test(haystack)
+    || DESTRUCTIVE_CONTEXT_RE.test(haystack)
+    || contextHasSensitiveField
+    || pageHasSensitiveField;
+}
+
 function requiresHumanApproval(action: AgentAction, pageState: PageState): string | null {
   if (action.action === 'navigate') {
     try {
@@ -398,6 +429,9 @@ function requiresHumanApproval(action: AgentAction, pageState: PageState): strin
     const target = pageState.elements.find((element) => element.ref === action.ref);
     if (target?.sensitive) {
       return `Element ${action.ref} is marked sensitive.`;
+    }
+    if (action.action === 'click' && isHighRiskClickTarget(target, pageState)) {
+      return `Clicking ${target?.name || action.ref} needs confirmation because it may submit or change something important.`;
     }
   }
 

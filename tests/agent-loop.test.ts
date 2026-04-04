@@ -662,4 +662,315 @@ describe('runAgentLoop', () => {
       expect.anything(),
     );
   });
+
+  it('handles read-only extraction tasks without taking actions', async () => {
+    const page = makePageState({
+      title: 'Fast Browser Docs',
+      visibleText: 'Fast Browser Docs\nMain heading\nHelpful product notes.',
+      elements: [],
+    });
+    const callModel = vi.fn().mockResolvedValue('{"action":"done","result":"Title: Fast Browser Docs\\nMain heading: Main heading","reason":"Extracted requested details"}');
+
+    const result = await runAgentLoop(
+      {
+        task: 'Extract the page title and main heading.',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi.fn().mockResolvedValue(page),
+        executeAction: vi.fn(),
+        navigate: vi.fn(),
+        callModel,
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.finalMessage).toContain('Title: Fast Browser Docs');
+    expect(result.finalMessage).toContain('Main heading: Main heading');
+    expect(callModel).toHaveBeenCalledWith(
+      expect.stringContaining('The user\'s task is read-only. Do not click, type, scroll, wait, or navigate.'),
+      expect.any(Array),
+      DEFAULT_PROVIDER_SETTINGS,
+      expect.anything(),
+    );
+  });
+
+  it('completes a search/form workflow by typing, clicking, then finishing', async () => {
+    const initialPage = makePageState({
+      snapshotId: 'snapshot-1',
+      title: 'Search',
+      visibleText: 'Search form',
+      elements: [
+        {
+          ref: '@e1',
+          tag: 'input',
+          role: 'searchbox',
+          name: 'Search query',
+          value: '',
+          context: 'Search',
+          inViewport: true,
+        },
+        {
+          ref: '@e2',
+          tag: 'button',
+          role: 'button',
+          name: 'Search',
+          context: 'Search',
+          inViewport: true,
+        },
+      ],
+      meta: {
+        hasForm: true,
+        hasDialog: false,
+        scrollPercent: 0,
+        loadingState: 'complete',
+        elementCount: 2,
+      },
+    });
+    const typedPage = makePageState({
+      snapshotId: 'snapshot-2',
+      title: 'Search',
+      visibleText: 'Search form',
+      elements: [
+        {
+          ref: '@e1',
+          tag: 'input',
+          role: 'searchbox',
+          name: 'Search query',
+          value: 'weather in sf',
+          context: 'Search',
+          inViewport: true,
+        },
+        {
+          ref: '@e2',
+          tag: 'button',
+          role: 'button',
+          name: 'Search',
+          context: 'Search',
+          inViewport: true,
+        },
+      ],
+      meta: {
+        hasForm: true,
+        hasDialog: false,
+        scrollPercent: 0,
+        loadingState: 'complete',
+        elementCount: 2,
+      },
+    });
+    const resultsPage = makePageState({
+      snapshotId: 'snapshot-3',
+      title: 'Weather results',
+      visibleText: 'Weather results for San Francisco',
+      elements: [],
+      meta: {
+        hasForm: false,
+        hasDialog: false,
+        scrollPercent: 0,
+        loadingState: 'complete',
+        elementCount: 0,
+      },
+    });
+
+    const executeAction = vi.fn().mockResolvedValue(undefined);
+    const callModel = vi
+      .fn()
+      .mockResolvedValueOnce('{"action":"type","ref":"@e1","text":"weather in sf","reason":"Fill the search box"}')
+      .mockResolvedValueOnce('{"action":"click","ref":"@e2","reason":"Submit the search"}')
+      .mockResolvedValueOnce('{"action":"done","result":"Opened the weather results page.","reason":"Task complete"}');
+
+    const result = await runAgentLoop(
+      {
+        task: 'Search for weather in sf.',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi
+          .fn<() => Promise<PageState>>()
+          .mockResolvedValueOnce(initialPage)
+          .mockResolvedValueOnce(typedPage)
+          .mockResolvedValueOnce(resultsPage),
+        executeAction,
+        navigate: vi.fn().mockResolvedValue(undefined),
+        callModel,
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(executeAction).toHaveBeenNthCalledWith(
+      1,
+      { action: 'type', ref: '@e1', text: 'weather in sf', reason: 'Fill the search box' },
+      'snapshot-1',
+    );
+    expect(executeAction).toHaveBeenNthCalledWith(
+      2,
+      { action: 'click', ref: '@e2', reason: 'Submit the search' },
+      'snapshot-2',
+    );
+    expect(result.pageState?.snapshotId).toBe('snapshot-3');
+  });
+
+  it('allows ordinary navigation clicks without asking for approval', async () => {
+    const firstPage = makePageState({
+      snapshotId: 'snapshot-1',
+      title: 'Docs home',
+      visibleText: 'Docs home',
+      elements: [
+        {
+          ref: '@e1',
+          tag: 'a',
+          role: 'link',
+          name: 'Pricing',
+          context: 'Docs',
+          inViewport: true,
+        },
+      ],
+      meta: {
+        hasForm: false,
+        hasDialog: false,
+        scrollPercent: 0,
+        loadingState: 'complete',
+        elementCount: 1,
+      },
+    });
+    const secondPage = makePageState({
+      snapshotId: 'snapshot-2',
+      title: 'Pricing',
+      visibleText: 'Pricing page',
+      elements: [],
+      meta: {
+        hasForm: false,
+        hasDialog: false,
+        scrollPercent: 0,
+        loadingState: 'complete',
+        elementCount: 0,
+      },
+    });
+
+    const result = await runAgentLoop(
+      {
+        task: 'Open the pricing page.',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi
+          .fn<() => Promise<PageState>>()
+          .mockResolvedValueOnce(firstPage)
+          .mockResolvedValueOnce(secondPage),
+        executeAction: vi.fn().mockResolvedValue(undefined),
+        navigate: vi.fn().mockResolvedValue(undefined),
+        callModel: vi
+          .fn()
+          .mockResolvedValueOnce('{"action":"click","ref":"@e1","reason":"Open pricing"}')
+          .mockResolvedValueOnce('{"action":"done","result":"Opened pricing.","reason":"Task complete"}'),
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.finalMessage).toContain('Opened pricing');
+  });
+
+  it('asks for approval before clicking a sign-in button in an auth flow', async () => {
+    const page = makePageState({
+      title: 'Sign in',
+      visibleText: 'Sign in to continue',
+      elements: [
+        {
+          ref: '@e1',
+          tag: 'input',
+          role: 'textbox',
+          name: 'Email',
+          context: 'Sign in',
+          inViewport: true,
+        },
+        {
+          ref: '@e2',
+          tag: 'input',
+          role: 'textbox',
+          name: 'Password',
+          type: 'password',
+          context: 'Sign in',
+          sensitive: true,
+          inViewport: true,
+        },
+        {
+          ref: '@e3',
+          tag: 'button',
+          role: 'button',
+          name: 'Sign in',
+          context: 'Sign in',
+          inViewport: true,
+        },
+      ],
+      meta: {
+        hasForm: true,
+        hasDialog: false,
+        scrollPercent: 0,
+        loadingState: 'complete',
+        elementCount: 3,
+      },
+    });
+
+    const result = await runAgentLoop(
+      {
+        task: 'Sign in to this site.',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi.fn().mockResolvedValue(page),
+        executeAction: vi.fn(),
+        navigate: vi.fn(),
+        callModel: vi.fn().mockResolvedValue('{"action":"click","ref":"@e3","reason":"Submit sign in"}'),
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.finalMessage).toMatch(/needs confirmation|important/i);
+    expect(result.feed.some((entry) => entry.kind === 'warning')).toBe(true);
+  });
+
+  it('asks for approval before clicking a checkout button in a payment flow', async () => {
+    const page = makePageState({
+      title: 'Checkout',
+      visibleText: 'Checkout page',
+      elements: [
+        {
+          ref: '@e1',
+          tag: 'button',
+          role: 'button',
+          name: 'Place order',
+          context: 'Checkout',
+          inViewport: true,
+        },
+      ],
+      meta: {
+        hasForm: true,
+        hasDialog: false,
+        scrollPercent: 0,
+        loadingState: 'complete',
+        elementCount: 1,
+      },
+    });
+
+    const result = await runAgentLoop(
+      {
+        task: 'Complete checkout.',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi.fn().mockResolvedValue(page),
+        executeAction: vi.fn(),
+        navigate: vi.fn(),
+        callModel: vi.fn().mockResolvedValue('{"action":"click","ref":"@e1","reason":"Place the order"}'),
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.finalMessage).toMatch(/needs confirmation|important/i);
+  });
 });
