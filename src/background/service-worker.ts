@@ -77,6 +77,18 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function formatAccessError(error: unknown): string {
+  const message = getErrorMessage(error);
+  if (/could not load file/i.test(message)) {
+    return [
+      'Fast Browser could not access this page because Chrome is still using an older unpacked build.',
+      'Reload the Fast Browser extension in chrome://extensions, then reopen the page and try again.',
+      `(${message})`,
+    ].join(' ');
+  }
+  return `Fast Browser could not access this page. Grant site access or reopen the side panel from the page you want to automate. (${message})`;
+}
+
 function isRetryableContentScriptError(error: unknown): boolean {
   const message = getErrorMessage(error);
   return /receiving end does not exist/i.test(message)
@@ -134,8 +146,7 @@ async function ensureActiveTabAccess(tabId: number, signal?: AbortSignal): Promi
     });
     await waitForContentScriptReady(tabId, signal);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown injection error.';
-    throw new Error(`Fast Browser could not access this page. Grant site access or reopen the side panel from the page you want to automate. (${message})`);
+    throw new Error(formatAccessError(error));
   }
 }
 
