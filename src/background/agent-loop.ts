@@ -158,6 +158,10 @@ function isReadOnlyTask(task: string): boolean {
     /\bdescribe\b/,
     /\bwhat does this page say\b/,
     /\bwhat is on this page\b/,
+    /\bwhat(?:'s| is)\b.+\b(this page|current page|page|site|article|title|heading|summary|about)\b/,
+    /\b(tell me|show me)\b.+\b(this page|current page|page|site|article|title|heading|summary|about)\b/,
+    /\b(page|this page|current page|site|article)\b.+\b(title|heading|summary|about|say|show|mean)\b/,
+    /\b(title|main heading|summary|key points)\b.+\b(page|this page|current page|article|site)\b/,
     /\blist\b.+\b(bullets|bullet points|headings|key points)\b/,
     /\bextract\b.+\b(title|heading|summary|main points)\b/,
   ];
@@ -177,6 +181,12 @@ function isReadOnlyTask(task: string): boolean {
   const looksReadOnly = readOnlyPatterns.some((pattern) => pattern.test(normalized));
   const looksInteractive = interactivePatterns.some((pattern) => pattern.test(normalized));
   return looksReadOnly && !looksInteractive;
+}
+
+function repairJsonCandidate(candidate: string): string {
+  return candidate
+    .replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_-]*)(\s*:)/g, '$1"$2"$3')
+    .replace(/:\s*'([^'\\]*(?:\\.[^'\\]*)*)'/g, (_match, value: string) => `:${JSON.stringify(value.replace(/\\'/g, '\''))}`);
 }
 
 function extractJsonCandidate(raw: string): string {
@@ -315,8 +325,18 @@ function parseAgentAction(raw: string): { action: AgentAction; warning?: string 
   try {
     parsedValue = JSON.parse(candidate);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown JSON parse error';
-    throw new Error(`Invalid JSON from model: ${message}. Raw response: ${raw.slice(0, 200)}`);
+    const repairedCandidate = repairJsonCandidate(candidate);
+    if (repairedCandidate !== candidate) {
+      try {
+        parsedValue = JSON.parse(repairedCandidate);
+      } catch {
+        const message = error instanceof Error ? error.message : 'Unknown JSON parse error';
+        throw new Error(`Invalid JSON from model: ${message}. Raw response: ${raw.slice(0, 200)}`);
+      }
+    } else {
+      const message = error instanceof Error ? error.message : 'Unknown JSON parse error';
+      throw new Error(`Invalid JSON from model: ${message}. Raw response: ${raw.slice(0, 200)}`);
+    }
   }
 
   const unwrapped = unwrapActionPayload(parsedValue);

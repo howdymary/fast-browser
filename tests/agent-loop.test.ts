@@ -294,6 +294,29 @@ describe('runAgentLoop', () => {
     expect(result.error).toBeDefined();
   });
 
+  it('repairs malformed JSON when a property name is not double-quoted', async () => {
+    const page = makePageState({
+      elements: [],
+    });
+
+    const result = await runAgentLoop(
+      {
+        task: 'What is the title of this page?',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi.fn().mockResolvedValue(page),
+        executeAction: vi.fn(),
+        navigate: vi.fn(),
+        callModel: vi.fn().mockResolvedValue('{"action":"done","result":"Title: Example",reason:"Got the title"}'),
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.finalMessage).toContain('Title: Example');
+  });
+
   it('produces an error when the model returns an unknown action type', async () => {
     const page = makePageState();
 
@@ -655,6 +678,53 @@ describe('runAgentLoop', () => {
 
     expect(result.ok).toBe(true);
     expect(result.finalMessage).toMatch(/automates browser tasks/i);
+    expect(callModel).toHaveBeenCalledWith(
+      expect.stringContaining('The user\'s task is read-only. Do not click, type, scroll, wait, or navigate.'),
+      expect.any(Array),
+      DEFAULT_PROVIDER_SETTINGS,
+      expect.anything(),
+    );
+  });
+
+  it('treats basic page questions as read-only tasks', async () => {
+    const page = makePageState({
+      title: 'Strait of Hormuz - Wikipedia',
+      visibleText: 'The Strait of Hormuz is a narrow waterway.',
+      elements: [
+        {
+          ref: '@e3',
+          tag: 'input',
+          role: 'searchbox',
+          name: 'Search Wikipedia',
+          inViewport: true,
+        },
+      ],
+      meta: {
+        hasForm: true,
+        hasDialog: false,
+        scrollPercent: 0,
+        loadingState: 'complete',
+        elementCount: 1,
+      },
+    });
+    const callModel = vi.fn().mockResolvedValue('{"action":"done","result":"Title: Strait of Hormuz - Wikipedia","reason":"Answered the question"}');
+
+    const result = await runAgentLoop(
+      {
+        task: 'What is the title of this page?',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi.fn().mockResolvedValue(page),
+        executeAction: vi.fn(),
+        navigate: vi.fn(),
+        callModel,
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.finalMessage).toContain('Title: Strait of Hormuz - Wikipedia');
     expect(callModel).toHaveBeenCalledWith(
       expect.stringContaining('The user\'s task is read-only. Do not click, type, scroll, wait, or navigate.'),
       expect.any(Array),
