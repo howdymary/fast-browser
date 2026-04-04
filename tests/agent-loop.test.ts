@@ -679,7 +679,7 @@ describe('runAgentLoop', () => {
     expect(result.ok).toBe(true);
     expect(result.finalMessage).toMatch(/automates browser tasks/i);
     expect(callModel).toHaveBeenCalledWith(
-      expect.stringContaining('The user\'s task is read-only. Do not click, type, scroll, wait, or navigate.'),
+      expect.stringContaining('The user\'s task is read-only. Do not click, focus, type, press, select, scroll, wait, or navigate.'),
       expect.any(Array),
       DEFAULT_PROVIDER_SETTINGS,
       expect.anything(),
@@ -726,7 +726,7 @@ describe('runAgentLoop', () => {
     expect(result.ok).toBe(true);
     expect(result.finalMessage).toContain('Title: Strait of Hormuz - Wikipedia');
     expect(callModel).toHaveBeenCalledWith(
-      expect.stringContaining('The user\'s task is read-only. Do not click, type, scroll, wait, or navigate.'),
+      expect.stringContaining('The user\'s task is read-only. Do not click, focus, type, press, select, scroll, wait, or navigate.'),
       expect.any(Array),
       DEFAULT_PROVIDER_SETTINGS,
       expect.anything(),
@@ -778,6 +778,209 @@ describe('runAgentLoop', () => {
     expect(result.finalMessage).toContain('Title: Strait of Hormuz - Wikipedia');
     expect(executeAction).not.toHaveBeenCalled();
     expect(callModel).toHaveBeenCalledTimes(2);
+    expect(callModel).toHaveBeenCalledWith(
+      expect.stringContaining('The user\'s task is read-only. Do not click, focus, type, press, select, scroll, wait, or navigate.'),
+      expect.any(Array),
+      DEFAULT_PROVIDER_SETTINGS,
+      expect.anything(),
+    );
+  });
+
+  it('accepts a focus action from the model and executes it', async () => {
+    const initialPage = makePageState({
+      snapshotId: 'snapshot-1',
+      elements: [
+        {
+          ref: '@e1',
+          tag: 'input',
+          role: 'searchbox',
+          name: 'Search query',
+          value: '',
+          inViewport: true,
+        },
+      ],
+      meta: {
+        hasForm: true,
+        hasDialog: false,
+        scrollPercent: 0,
+        loadingState: 'complete',
+        elementCount: 1,
+      },
+    });
+    const focusedPage = makePageState({
+      snapshotId: 'snapshot-2',
+      elements: initialPage.elements,
+      meta: initialPage.meta,
+    });
+    const executeAction = vi.fn().mockResolvedValue(undefined);
+
+    const result = await runAgentLoop(
+      {
+        task: 'Focus the search field.',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi
+          .fn<() => Promise<PageState>>()
+          .mockResolvedValueOnce(initialPage)
+          .mockResolvedValueOnce(focusedPage),
+        executeAction,
+        navigate: vi.fn().mockResolvedValue(undefined),
+        callModel: vi
+          .fn()
+          .mockResolvedValueOnce('{"action":"focus","ref":"@e1","reason":"Focus search"}')
+          .mockResolvedValueOnce('{"action":"done","result":"Focused the search field.","reason":"Task complete"}'),
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(executeAction).toHaveBeenCalledWith(
+      { action: 'focus', ref: '@e1', reason: 'Focus search' },
+      'snapshot-1',
+    );
+  });
+
+  it('accepts a press action and uses it to submit a search flow', async () => {
+    const initialPage = makePageState({
+      snapshotId: 'snapshot-1',
+      title: 'Search',
+      visibleText: 'Search form',
+      elements: [
+        {
+          ref: '@e1',
+          tag: 'input',
+          role: 'searchbox',
+          name: 'Search query',
+          value: 'weather in sf',
+          context: 'Search',
+          inViewport: true,
+        },
+      ],
+      meta: {
+        hasForm: true,
+        hasDialog: false,
+        scrollPercent: 0,
+        loadingState: 'complete',
+        elementCount: 1,
+      },
+    });
+    const resultsPage = makePageState({
+      snapshotId: 'snapshot-2',
+      title: 'Weather results',
+      visibleText: 'Weather results for San Francisco',
+      elements: [],
+      meta: {
+        hasForm: false,
+        hasDialog: false,
+        scrollPercent: 0,
+        loadingState: 'complete',
+        elementCount: 0,
+      },
+    });
+    const executeAction = vi.fn().mockResolvedValue(undefined);
+
+    const result = await runAgentLoop(
+      {
+        task: 'Submit the search.',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi
+          .fn<() => Promise<PageState>>()
+          .mockResolvedValueOnce(initialPage)
+          .mockResolvedValueOnce(resultsPage),
+        executeAction,
+        navigate: vi.fn().mockResolvedValue(undefined),
+        callModel: vi
+          .fn()
+          .mockResolvedValueOnce('{"action":"press","key":"Enter","ref":"@e1","reason":"Submit search"}')
+          .mockResolvedValueOnce('{"action":"done","result":"Opened the weather results page.","reason":"Task complete"}'),
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(executeAction).toHaveBeenCalledWith(
+      { action: 'press', key: 'Enter', ref: '@e1', reason: 'Submit search' },
+      'snapshot-1',
+    );
+  });
+
+  it('accepts a select action and verifies the chosen value', async () => {
+    const initialPage = makePageState({
+      snapshotId: 'snapshot-1',
+      title: 'Weather settings',
+      visibleText: 'Choose a city',
+      elements: [
+        {
+          ref: '@e1',
+          tag: 'select',
+          role: 'select',
+          name: 'City',
+          value: '',
+          context: 'Weather settings',
+          inViewport: true,
+        },
+      ],
+      meta: {
+        hasForm: true,
+        hasDialog: false,
+        scrollPercent: 0,
+        loadingState: 'complete',
+        elementCount: 1,
+      },
+    });
+    const selectedPage = makePageState({
+      snapshotId: 'snapshot-2',
+      title: 'Weather settings',
+      visibleText: 'Choose a city',
+      elements: [
+        {
+          ref: '@e1',
+          tag: 'select',
+          role: 'select',
+          name: 'City',
+          value: 'San Francisco',
+          context: 'Weather settings',
+          inViewport: true,
+        },
+      ],
+      meta: {
+        hasForm: true,
+        hasDialog: false,
+        scrollPercent: 0,
+        loadingState: 'complete',
+        elementCount: 1,
+      },
+    });
+    const executeAction = vi.fn().mockResolvedValue(undefined);
+
+    const result = await runAgentLoop(
+      {
+        task: 'Choose San Francisco from the city menu.',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi
+          .fn<() => Promise<PageState>>()
+          .mockResolvedValueOnce(initialPage)
+          .mockResolvedValueOnce(selectedPage),
+        executeAction,
+        navigate: vi.fn().mockResolvedValue(undefined),
+        callModel: vi
+          .fn()
+          .mockResolvedValueOnce('{"action":"select","ref":"@e1","value":"San Francisco","reason":"Choose city"}')
+          .mockResolvedValueOnce('{"action":"done","result":"Selected San Francisco.","reason":"Task complete"}'),
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(executeAction).toHaveBeenCalledWith(
+      { action: 'select', ref: '@e1', value: 'San Francisco', reason: 'Choose city' },
+      'snapshot-1',
+    );
   });
 
   it('handles read-only extraction tasks without taking actions', async () => {
@@ -806,7 +1009,7 @@ describe('runAgentLoop', () => {
     expect(result.finalMessage).toContain('Title: Fast Browser Docs');
     expect(result.finalMessage).toContain('Main heading: Main heading');
     expect(callModel).toHaveBeenCalledWith(
-      expect.stringContaining('The user\'s task is read-only. Do not click, type, scroll, wait, or navigate.'),
+      expect.stringContaining('The user\'s task is read-only. Do not click, focus, type, press, select, scroll, wait, or navigate.'),
       expect.any(Array),
       DEFAULT_PROVIDER_SETTINGS,
       expect.anything(),

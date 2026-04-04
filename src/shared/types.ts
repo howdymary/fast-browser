@@ -49,6 +49,26 @@ export interface TypeAction {
   reason: string;
 }
 
+export interface FocusAction {
+  action: 'focus';
+  ref: string;
+  reason: string;
+}
+
+export interface PressAction {
+  action: 'press';
+  key: string;
+  ref?: string;
+  reason: string;
+}
+
+export interface SelectAction {
+  action: 'select';
+  ref: string;
+  value: string;
+  reason: string;
+}
+
 export interface ScrollAction {
   action: 'scroll';
   direction: 'up' | 'down';
@@ -82,6 +102,9 @@ export interface DoneAction {
 export type AgentAction =
   | ClickAction
   | TypeAction
+  | FocusAction
+  | PressAction
+  | SelectAction
   | ScrollAction
   | NavigateAction
   | WaitAction
@@ -91,6 +114,9 @@ export type AgentAction =
 export type ExecutableAction =
   | ClickAction
   | TypeAction
+  | FocusAction
+  | PressAction
+  | SelectAction
   | ScrollAction
   | WaitAction;
 

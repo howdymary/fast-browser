@@ -72,7 +72,10 @@ The working loop today is:
 Supported action types in this slice:
 
 - `click`
+- `focus`
 - `type`
+- `press`
+- `select`
 - `scroll`
 - `wait`
 - `navigate`
@@ -123,7 +126,7 @@ ollama pull gemma3:4b
 
 What is still intentionally missing:
 
-- richer action types like `select`, `extract`, or multi-action plans
+- extraction-specific actions or reliable multi-action plans
 - robust page-settling logic for highly dynamic apps
 - file upload, iframe, and rich-editor flows
 - production-grade prompt-injection hardening
@@ -134,7 +137,7 @@ What is still intentionally missing:
 - The extension is now set up for runtime site access, but the active-tab + per-site permission model still needs more real-world testing across sites.
 - The DOM extractor currently ignores iframes and shadow DOM.
 - Page snapshots are intentionally capped at 60 interactive elements and 2500 visible-text characters.
-- The current action set is intentionally narrow and does not yet cover form controls beyond typing into the active target.
+- The current action set is still intentionally narrow, even though it now covers focus, key presses, and basic select controls.
 - The prompt format expects one JSON action per step, so multi-step plans are not yet supported.
 - The current security model reduces risk, but it does not fully solve prompt injection or malicious page content.
 - The side panel only knows which models are ready if your local Ollama server is reachable from the extension.
@@ -191,6 +194,6 @@ npm test
 Near-term priorities:
 
 - add a small action verifier and better page-settling logic
-- support richer but still safe actions like `select` and `extract`
+- support richer but still safe actions like `extract`
 - harden prompt-injection defenses before broader release
 - tighten host permissions for production deployment

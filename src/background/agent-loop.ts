@@ -23,7 +23,10 @@ Respond with exactly one JSON object and nothing else.
 
 Allowed actions:
 {"action":"click","ref":"@e4","reason":"Open the search form"}
+{"action":"focus","ref":"@e2","reason":"Focus the search box"}
 {"action":"type","ref":"@e2","text":"San Francisco weather","reason":"Fill the query"}
+{"action":"press","key":"Enter","ref":"@e2","reason":"Submit the search"}
+{"action":"select","ref":"@e5","value":"San Francisco","reason":"Choose the city"}
 {"action":"scroll","direction":"down","reason":"See more results"}
 {"action":"navigate","url":"https://www.google.com","reason":"Open the search engine"}
 {"action":"wait","ms":800,"reason":"Wait for the page"}
@@ -34,17 +37,20 @@ Rules:
 1. Only use refs that appear in the current page snapshot.
 2. Prefer acting on the current page before navigating elsewhere.
 3. Never type into sensitive fields.
-4. If the page is missing the controls you need, navigate explicitly.
-5. If you are uncertain or the page looks risky, use ask_human.
-6. Keep reasons under 12 words.
-7. Do not return {"actions":[...]}, arrays, plans, or wrapper objects.
-8. If you think multiple steps are needed, return only the immediate next action object.
+4. Use focus before typing when the target needs activation.
+5. Use press for Enter, Escape, Tab, or Space when keyboard control is the right next step.
+6. Use select for native dropdowns or combobox-style menus when choosing an option.
+7. If the page is missing the controls you need, navigate explicitly.
+8. If you are uncertain or the page looks risky, use ask_human.
+9. Keep reasons under 12 words.
+10. Do not return {"actions":[...]}, arrays, plans, or wrapper objects.
+11. If you think multiple steps are needed, return only the immediate next action object.
 `.trim();
 
 const READ_ONLY_SYSTEM_PROMPT = `
 You are Fast Browser, a browser agent answering from the current page snapshot.
 
-The user's task is read-only. Do not click, type, scroll, wait, or navigate.
+The user's task is read-only. Do not click, focus, type, press, select, scroll, wait, or navigate.
 
 Respond with exactly one JSON object and nothing else.
 
@@ -361,6 +367,42 @@ function parseAgentAction(raw: string): { action: AgentAction; warning?: string 
         return { action: { action: 'type', ref: parsed.ref, text: parsed.text, reason: parsed.reason ?? 'Type text' }, warning: unwrapped.warning };
       }
       break;
+    case 'focus':
+      if (typeof parsed.ref === 'string') {
+        return { action: { action: 'focus', ref: parsed.ref, reason: parsed.reason ?? 'Focus target' }, warning: unwrapped.warning };
+      }
+      break;
+    case 'press':
+      if (typeof parsed.key === 'string') {
+        return {
+          action: {
+            action: 'press',
+            key: parsed.key,
+            ref: typeof parsed.ref === 'string' ? parsed.ref : undefined,
+            reason: parsed.reason ?? 'Press key',
+          },
+          warning: unwrapped.warning,
+        };
+      }
+      break;
+    case 'select':
+      {
+        const selectedValue = typeof parsed.value === 'string'
+          ? parsed.value
+          : (typeof (parsed as { text?: unknown }).text === 'string' ? (parsed as { text: string }).text : null);
+        if (typeof parsed.ref === 'string' && selectedValue) {
+          return {
+            action: {
+              action: 'select',
+              ref: parsed.ref,
+              value: selectedValue,
+              reason: parsed.reason ?? 'Choose option',
+            },
+            warning: unwrapped.warning,
+          };
+        }
+      }
+      break;
     case 'scroll':
       if (parsed.direction === 'up' || parsed.direction === 'down') {
         return { action: { action: 'scroll', direction: parsed.direction, reason: parsed.reason ?? 'Scroll page' }, warning: unwrapped.warning };
@@ -401,6 +443,9 @@ function parseAgentAction(raw: string): { action: AgentAction; warning?: string 
 
 function isExecutableAction(action: AgentAction): action is ExecutableAction {
   return action.action === 'click'
+    || action.action === 'focus'
+    || action.action === 'press'
+    || action.action === 'select'
     || action.action === 'type'
     || action.action === 'scroll'
     || action.action === 'wait';
@@ -450,13 +495,30 @@ function requiresHumanApproval(action: AgentAction, pageState: PageState): strin
     }
   }
 
-  if (action.action === 'click' || action.action === 'type') {
+  if (action.action === 'click' || action.action === 'type' || action.action === 'focus' || action.action === 'select') {
     const target = pageState.elements.find((element) => element.ref === action.ref);
     if (target?.sensitive) {
       return `Element ${action.ref} is marked sensitive.`;
     }
     if (action.action === 'click' && isHighRiskClickTarget(target, pageState)) {
       return `Clicking ${target?.name || action.ref} needs confirmation because it may submit or change something important.`;
+    }
+    if (action.action === 'select' && isHighRiskClickTarget(target, pageState)) {
+      return `Changing ${target?.name || action.ref} needs confirmation because it may affect a sensitive flow.`;
+    }
+  }
+
+  if (action.action === 'press') {
+    const target = action.ref
+      ? pageState.elements.find((element) => element.ref === action.ref)
+      : undefined;
+
+    if (target?.sensitive) {
+      return `Element ${target.ref} is marked sensitive.`;
+    }
+
+    if (action.key === 'Enter' && isHighRiskClickTarget(target, pageState)) {
+      return `Pressing Enter on ${target?.name || action.ref || 'the current target'} needs confirmation because it may submit or change something important.`;
     }
   }
 
@@ -521,6 +583,25 @@ function verifyActionEffect(
     const currentTarget = findComparableElement(currentPage, previousTarget);
     if (!currentTarget || currentTarget.value !== action.text) {
       return `Typing into ${previousTarget?.name || action.ref} may not have updated the field.`;
+    }
+  }
+
+  if (action.action === 'select') {
+    const previousTarget = previousPage.elements.find((element) => element.ref === action.ref);
+    const currentTarget = findComparableElement(currentPage, previousTarget);
+    if (!currentTarget || currentTarget.value !== action.value) {
+      return `Selecting ${action.value} on ${previousTarget?.name || action.ref} may not have updated the control.`;
+    }
+  }
+
+  if (action.action === 'press') {
+    const pageChanged = previousPage.url !== currentPage.url
+      || previousPage.visibleText !== currentPage.visibleText
+      || previousPage.meta.hasDialog !== currentPage.meta.hasDialog
+      || previousPage.meta.elementCount !== currentPage.meta.elementCount
+      || previousPage.meta.scrollPercent !== currentPage.meta.scrollPercent;
+    if (!pageChanged) {
+      return `Pressing ${action.key} may not have changed the page.`;
     }
   }
 

@@ -1,4 +1,13 @@
-import type { ClickAction, ExecutableAction, ScrollAction, TypeAction, WaitAction } from '../shared/types';
+import type {
+  ClickAction,
+  ExecutableAction,
+  FocusAction,
+  PressAction,
+  ScrollAction,
+  SelectAction,
+  TypeAction,
+  WaitAction,
+} from '../shared/types';
 import { isSensitiveElement } from '../shared/security';
 
 export interface SnapshotCache {
@@ -43,6 +52,28 @@ function supportsContentEditable(element: HTMLElement): boolean {
   return element.isContentEditable || element.getAttribute('contenteditable') === 'true';
 }
 
+function resolveFocusableTarget(element: HTMLElement): HTMLElement {
+  if (
+    element instanceof HTMLInputElement
+    || element instanceof HTMLTextAreaElement
+    || element instanceof HTMLSelectElement
+    || supportsContentEditable(element)
+    || hasWritableValue(element)
+    || element.tabIndex >= 0
+  ) {
+    return element;
+  }
+
+  const nestedTarget = element.querySelector(
+    'input:not([type="hidden"]), textarea, select, [contenteditable="true"], [role="textbox"], [role="searchbox"], [role="combobox"], button, a[href], [tabindex]',
+  );
+  if (nestedTarget instanceof HTMLElement) {
+    return nestedTarget;
+  }
+
+  return element;
+}
+
 function resolveTypingTarget(element: HTMLElement): HTMLElement {
   if (
     element instanceof HTMLInputElement
@@ -56,6 +87,23 @@ function resolveTypingTarget(element: HTMLElement): HTMLElement {
   const nestedTarget = element.querySelector(
     'input:not([type="hidden"]), textarea, [contenteditable="true"], [role="textbox"], [role="searchbox"], [role="combobox"]',
   );
+  if (nestedTarget instanceof HTMLElement) {
+    return nestedTarget;
+  }
+
+  return element;
+}
+
+function resolveSelectTarget(element: HTMLElement): HTMLElement {
+  if (
+    element instanceof HTMLSelectElement
+    || element instanceof HTMLInputElement
+    || element instanceof HTMLTextAreaElement
+  ) {
+    return element;
+  }
+
+  const nestedTarget = element.querySelector('select, [role="combobox"], input:not([type="hidden"]), textarea');
   if (nestedTarget instanceof HTMLElement) {
     return nestedTarget;
   }
@@ -111,6 +159,14 @@ function executeClick(action: ClickAction, snapshot: SnapshotCache): void {
   element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
 }
 
+function executeFocus(action: FocusAction, snapshot: SnapshotCache): void {
+  const referencedElement = getElementByRef(action.ref, snapshot);
+  const element = resolveFocusableTarget(referencedElement);
+  ensureActionableElement(element);
+  element.scrollIntoView({ block: 'center', inline: 'center' });
+  element.focus();
+}
+
 function executeType(action: TypeAction, snapshot: SnapshotCache): void {
   const referencedElement = getElementByRef(action.ref, snapshot);
   const element = resolveTypingTarget(referencedElement);
@@ -149,6 +205,108 @@ function executeType(action: TypeAction, snapshot: SnapshotCache): void {
   throw new Error('Target element does not support typing.');
 }
 
+function tryDispatchKeyboardTargetClick(target: HTMLElement, key: string): void {
+  if (key !== 'Enter' && key !== ' ') {
+    return;
+  }
+
+  if (
+    target instanceof HTMLButtonElement
+    || target instanceof HTMLAnchorElement
+    || target.getAttribute('role') === 'button'
+    || target.getAttribute('role') === 'link'
+  ) {
+    target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+  }
+}
+
+function executePress(action: PressAction, snapshot: SnapshotCache): void {
+  const referencedElement = action.ref ? getElementByRef(action.ref, snapshot) : null;
+  const fallbackActive = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const target = referencedElement
+    ? resolveFocusableTarget(referencedElement)
+    : (fallbackActive ?? document.body);
+
+  ensureActionableElement(target);
+  if (referencedElement && (isSensitiveElement(referencedElement) || isSensitiveElement(target))) {
+    throw new Error('Sensitive elements require human approval.');
+  }
+
+  target.scrollIntoView({ block: 'center', inline: 'center' });
+  target.focus();
+
+  const key = action.key;
+  target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+  if (key.length === 1) {
+    target.dispatchEvent(new KeyboardEvent('keypress', { key, bubbles: true, cancelable: true }));
+  }
+
+  if (key === 'Enter') {
+    const formOwner = target instanceof HTMLInputElement
+      || target instanceof HTMLTextAreaElement
+      || target instanceof HTMLSelectElement
+      ? target.form
+      : target.closest('form');
+    if (formOwner instanceof HTMLFormElement) {
+      if (typeof formOwner.requestSubmit === 'function') {
+        formOwner.requestSubmit();
+      } else {
+        formOwner.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      }
+    } else {
+      tryDispatchKeyboardTargetClick(target, key);
+    }
+  } else {
+    tryDispatchKeyboardTargetClick(target, key);
+  }
+
+  target.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true, cancelable: true }));
+}
+
+function executeSelect(action: SelectAction, snapshot: SnapshotCache): void {
+  const referencedElement = getElementByRef(action.ref, snapshot);
+  const element = resolveSelectTarget(referencedElement);
+  ensureActionableElement(element);
+  if (isSensitiveElement(referencedElement) || isSensitiveElement(element)) {
+    throw new Error('Sensitive elements require human approval.');
+  }
+
+  element.scrollIntoView({ block: 'center', inline: 'center' });
+  element.focus();
+
+  if (element instanceof HTMLSelectElement) {
+    const matchedOption = Array.from(element.options).find((option) => (
+      option.value === action.value
+      || option.label === action.value
+      || option.text === action.value
+    ));
+    if (!matchedOption) {
+      throw new Error(`Could not find option "${action.value}" on the target select.`);
+    }
+    element.value = matchedOption.value;
+    element.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      data: matchedOption.value,
+      inputType: 'insertReplacementText',
+    }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    return;
+  }
+
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+    setNativeValue(element, action.value);
+    element.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      data: action.value,
+      inputType: 'insertReplacementText',
+    }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    return;
+  }
+
+  throw new Error('Target element does not support selecting an option.');
+}
+
 async function executeScroll(action: ScrollAction): Promise<void> {
   const scrollingElement = document.scrollingElement ?? document.documentElement;
   const scrollTopBefore = scrollingElement.scrollTop;
@@ -176,6 +334,15 @@ export async function executeAction(
   switch (action.action) {
     case 'click':
       executeClick(action, currentSnapshot);
+      return;
+    case 'focus':
+      executeFocus(action, currentSnapshot);
+      return;
+    case 'press':
+      executePress(action, currentSnapshot);
+      return;
+    case 'select':
+      executeSelect(action, currentSnapshot);
       return;
     case 'type':
       executeType(action, currentSnapshot);

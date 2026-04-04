@@ -9,7 +9,10 @@ function installDomGlobals(dom: JSDOM): void {
     document: dom.window.document,
     HTMLElement: dom.window.HTMLElement,
     HTMLButtonElement: dom.window.HTMLButtonElement,
+    HTMLAnchorElement: dom.window.HTMLAnchorElement,
+    HTMLFormElement: dom.window.HTMLFormElement,
     HTMLInputElement: dom.window.HTMLInputElement,
+    HTMLSelectElement: dom.window.HTMLSelectElement,
     HTMLTextAreaElement: dom.window.HTMLTextAreaElement,
     Event: dom.window.Event,
     InputEvent: dom.window.InputEvent,
@@ -139,6 +142,28 @@ describe('executeAction', () => {
     expect(changeEvents).toBe(1);
   });
 
+  it('focuses a referenced element', async () => {
+    const dom = new JSDOM(`
+      <!doctype html>
+      <html>
+        <body>
+          <input id="query" value="" />
+        </body>
+      </html>
+    `);
+    installDomGlobals(dom);
+
+    const input = dom.window.document.getElementById('query') as HTMLInputElement;
+
+    await executeAction(
+      { action: 'focus', ref: '@e1', reason: 'Focus search' },
+      'snapshot-1',
+      makeSnapshot('snapshot-1', [['@e1', input]]),
+    );
+
+    expect(dom.window.document.activeElement).toBe(input);
+  });
+
   it('types into a contenteditable element', async () => {
     const dom = new JSDOM(`
       <!doctype html>
@@ -188,6 +213,88 @@ describe('executeAction', () => {
     );
 
     expect(input.value).toBe('weather');
+  });
+
+  it('presses Enter on a focused input and submits the form', async () => {
+    const dom = new JSDOM(`
+      <!doctype html>
+      <html>
+        <body>
+          <form id="search-form">
+            <input id="query" value="weather" />
+          </form>
+        </body>
+      </html>
+    `);
+    installDomGlobals(dom);
+
+    const form = dom.window.document.getElementById('search-form') as HTMLFormElement;
+    const input = dom.window.document.getElementById('query') as HTMLInputElement;
+    let submitted = 0;
+    form.requestSubmit = () => {
+      submitted += 1;
+    };
+
+    await executeAction(
+      { action: 'press', key: 'Enter', ref: '@e1', reason: 'Submit search' },
+      'snapshot-1',
+      makeSnapshot('snapshot-1', [['@e1', input]]),
+    );
+
+    expect(submitted).toBe(1);
+  });
+
+  it('selects an option on a native select element', async () => {
+    const dom = new JSDOM(`
+      <!doctype html>
+      <html>
+        <body>
+          <select id="city">
+            <option value="">Choose</option>
+            <option value="sf">San Francisco</option>
+            <option value="nyc">New York</option>
+          </select>
+        </body>
+      </html>
+    `);
+    installDomGlobals(dom);
+
+    const select = dom.window.document.getElementById('city') as HTMLSelectElement;
+    let changed = 0;
+    select.addEventListener('change', () => {
+      changed += 1;
+    });
+
+    await executeAction(
+      { action: 'select', ref: '@e1', value: 'San Francisco', reason: 'Choose city' },
+      'snapshot-1',
+      makeSnapshot('snapshot-1', [['@e1', select]]),
+    );
+
+    expect(select.value).toBe('sf');
+    expect(changed).toBe(1);
+  });
+
+  it('rejects select actions on unsupported elements', async () => {
+    const dom = new JSDOM(`
+      <!doctype html>
+      <html>
+        <body>
+          <button id="submit">Submit</button>
+        </body>
+      </html>
+    `);
+    installDomGlobals(dom);
+
+    const button = dom.window.document.getElementById('submit') as HTMLElement;
+
+    await expect(
+      executeAction(
+        { action: 'select', ref: '@e1', value: 'San Francisco', reason: 'Choose city' },
+        'snapshot-1',
+        makeSnapshot('snapshot-1', [['@e1', button]]),
+      ),
+    ).rejects.toThrow(/does not support selecting/i);
   });
 
   it('rejects clicks on disabled targets', async () => {
