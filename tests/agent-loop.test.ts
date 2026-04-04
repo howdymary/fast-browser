@@ -423,6 +423,58 @@ describe('runAgentLoop', () => {
     expect(result.finalMessage).toContain('Point three');
   });
 
+  it('parses fenced JSON read-only results with array bullets', async () => {
+    const page = makePageState({
+      elements: [],
+    });
+
+    const result = await runAgentLoop(
+      {
+        task: 'Summarize this page in 3 bullets.',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi.fn().mockResolvedValue(page),
+        executeAction: vi.fn(),
+        navigate: vi.fn(),
+        callModel: vi.fn().mockResolvedValue([
+          '```json',
+          '{"action":"done","result":["Point one","Point two","Point three"],"reason":"Summarized the page"}',
+          '```',
+        ].join('\n')),
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.finalMessage).toContain('- Point one');
+    expect(result.finalMessage).toContain('- Point three');
+  });
+
+  it('parses done results with nested content arrays', async () => {
+    const page = makePageState({
+      elements: [],
+    });
+
+    const result = await runAgentLoop(
+      {
+        task: 'Summarize this page in 3 bullets.',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi.fn().mockResolvedValue(page),
+        executeAction: vi.fn(),
+        navigate: vi.fn(),
+        callModel: vi.fn().mockResolvedValue('{"action":"done","result":{"content":["Point one","Point two","Point three"]},"reason":"Summarized the page"}'),
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.finalMessage).toContain('- Point one');
+    expect(result.finalMessage).toContain('- Point three');
+  });
+
   it('normalizes ask_human questions when the model returns a list', async () => {
     const page = makePageState();
 
