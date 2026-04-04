@@ -152,15 +152,19 @@ function formatHistory(history: AgentAction[]): string {
 
 function isReadOnlyTask(task: string): boolean {
   const normalized = task.toLowerCase();
+  const trimmed = normalized.trim();
   const readOnlyPatterns = [
     /\bsummar(?:ize|y)\b/,
     /\bexplain\b/,
     /\bdescribe\b/,
+    /^\s*(what|when|where|who|why|how)\b.+\??$/,
     /\bwhat does this page say\b/,
     /\bwhat is on this page\b/,
     /\bwhat(?:'s| is)\b.+\b(this page|current page|page|site|article|title|heading|summary|about)\b/,
     /\b(tell me|show me)\b.+\b(this page|current page|page|site|article|title|heading|summary|about)\b/,
     /\b(page|this page|current page|site|article)\b.+\b(title|heading|summary|about|say|show|mean)\b/,
+    /\b(article|page|site)\b.+\b(published|updated|written|author|title|heading)\b/,
+    /\b(published|updated|written|author|title|heading)\b.+\b(article|page|site)\b/,
     /\b(title|main heading|summary|key points)\b.+\b(page|this page|current page|article|site)\b/,
     /\blist\b.+\b(bullets|bullet points|headings|key points)\b/,
     /\bextract\b.+\b(title|heading|summary|main points)\b/,
@@ -180,7 +184,8 @@ function isReadOnlyTask(task: string): boolean {
 
   const looksReadOnly = readOnlyPatterns.some((pattern) => pattern.test(normalized));
   const looksInteractive = interactivePatterns.some((pattern) => pattern.test(normalized));
-  return looksReadOnly && !looksInteractive;
+  const looksLikeQuestion = trimmed.endsWith('?') && !looksInteractive;
+  return (looksReadOnly || looksLikeQuestion) && !looksInteractive;
 }
 
 function repairJsonCandidate(candidate: string): string {
@@ -618,6 +623,74 @@ async function callModelWithRetry(
   }
 }
 
+async function repromptForReadOnlyAnswer(
+  deps: AgentLoopDependencies,
+  step: number,
+  feed: ActionFeedEntry[],
+  settings: ProviderSettings,
+  task: string,
+  history: AgentAction[],
+  currentPage: PageState,
+  rejectedAction: AgentAction,
+): Promise<AgentAction> {
+  const warningEntry = makeFeedEntry(
+    `The model proposed ${rejectedAction.action} for a read-only question. Asking for a direct answer instead.`,
+    'warning',
+  );
+  feed.push(warningEntry);
+  await emitEvent(deps, {
+    step,
+    phase: 'plan',
+    entry: warningEntry,
+    pageState: currentPage,
+  });
+
+  const rawAction = await callModelWithRetry(
+    deps,
+    step,
+    feed,
+    READ_ONLY_SYSTEM_PROMPT,
+    [
+      {
+        role: 'user',
+        content: [
+          `Task: ${task}`,
+          `History:\n${formatHistory(history)}`,
+          `Current page:\n${formatPageState(currentPage)}`,
+        ].join('\n\n'),
+      },
+      {
+        role: 'assistant',
+        content: JSON.stringify(rejectedAction),
+      },
+      {
+        role: 'user',
+        content: 'That was a browsing action. This task is read-only. Return only a single {"action":"done",...} or {"action":"ask_human",...} object based on the current page snapshot.',
+      },
+    ],
+    settings,
+    currentPage,
+  );
+
+  const parsedAction = parseAgentAction(rawAction);
+  if (parsedAction.warning) {
+    const parsedWarningEntry = makeFeedEntry(parsedAction.warning, 'warning');
+    feed.push(parsedWarningEntry);
+    await emitEvent(deps, {
+      step,
+      phase: 'plan',
+      entry: parsedWarningEntry,
+      pageState: currentPage,
+    });
+  }
+
+  if (parsedAction.action.action !== 'done' && parsedAction.action.action !== 'ask_human') {
+    throw new Error('The model kept proposing browsing actions for a read-only question.');
+  }
+
+  return parsedAction.action;
+}
+
 export async function runAgentLoop(
   options: AgentLoopOptions,
   deps: AgentLoopDependencies,
@@ -629,6 +702,7 @@ export async function runAgentLoop(
     const feed: ActionFeedEntry[] = [];
     const history: AgentAction[] = [];
     const readOnlyTask = isReadOnlyTask(options.task);
+    let readOnlyRepromptUsed = false;
 
     await emitEvent(deps, {
       step: 0,
@@ -691,6 +765,26 @@ export async function runAgentLoop(
             entry: warningEntry,
             pageState: currentPage,
           });
+        }
+        if (
+          readOnlyTask
+          && action.action !== 'done'
+          && action.action !== 'ask_human'
+        ) {
+          if (readOnlyRepromptUsed) {
+            throw new Error('The model kept proposing browsing actions for a read-only question.');
+          }
+          readOnlyRepromptUsed = true;
+          action = await repromptForReadOnlyAnswer(
+            deps,
+            step,
+            feed,
+            options.settings,
+            options.task,
+            history,
+            currentPage,
+            action,
+          );
         }
       } catch (parseError) {
         const message = parseError instanceof Error ? parseError.message : 'Failed to parse model response.';

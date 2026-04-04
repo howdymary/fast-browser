@@ -733,6 +733,53 @@ describe('runAgentLoop', () => {
     );
   });
 
+  it('reprompts for a direct answer when a read-only question gets an interactive action first', async () => {
+    const page = makePageState({
+      title: 'Strait of Hormuz - Wikipedia',
+      visibleText: 'The Strait of Hormuz is a narrow waterway.',
+      elements: [
+        {
+          ref: '@e3',
+          tag: 'input',
+          role: 'searchbox',
+          name: 'Search Wikipedia',
+          inViewport: true,
+        },
+      ],
+      meta: {
+        hasForm: true,
+        hasDialog: false,
+        scrollPercent: 0,
+        loadingState: 'complete',
+        elementCount: 1,
+      },
+    });
+    const executeAction = vi.fn();
+    const callModel = vi
+      .fn()
+      .mockResolvedValueOnce('{"action":"type","ref":"@e3","text":"Strait of Hormuz - Wikipedia",reason:"Get the title"}')
+      .mockResolvedValueOnce('{"action":"done","result":"Title: Strait of Hormuz - Wikipedia","reason":"Answered the question"}');
+
+    const result = await runAgentLoop(
+      {
+        task: 'What is the title of this page?',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi.fn().mockResolvedValue(page),
+        executeAction,
+        navigate: vi.fn(),
+        callModel,
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.finalMessage).toContain('Title: Strait of Hormuz - Wikipedia');
+    expect(executeAction).not.toHaveBeenCalled();
+    expect(callModel).toHaveBeenCalledTimes(2);
+  });
+
   it('handles read-only extraction tasks without taking actions', async () => {
     const page = makePageState({
       title: 'Fast Browser Docs',
