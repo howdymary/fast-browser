@@ -297,7 +297,7 @@ export function App(): ReactElement {
     [allModelOptions, settings.model],
   );
   const suggestedModelNames = useMemo(
-    () => suggestedModels.map((option) => option.value).join(', '),
+    () => suggestedModels.slice(0, 8).map((option) => option.value).join(', '),
     [suggestedModels],
   );
   const currentModelInstalled = useMemo(
@@ -733,7 +733,7 @@ export function App(): ReactElement {
                     <li>Click refresh above if you just installed a model, then run a prompt on the current page.</li>
                   </ol>
                   <div className="mt-4 rounded-2xl border border-white/8 bg-black/20 px-3 py-3 text-xs text-slate-400">
-                    Recommended free models to install next: {suggestedModelNames}.
+                    The dropdown includes a broad free Ollama model catalog. Good starting picks are {suggestedModelNames}.
                   </div>
                 </div>
               </div>

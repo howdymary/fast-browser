@@ -108,11 +108,17 @@ describe('Ollama helpers', () => {
 
   it('returns the suggested free-model catalog', () => {
     const suggested = getSuggestedModelOptions();
+    expect(suggested.some((option) => option.value === 'llama3.2:1b')).toBe(true);
     expect(suggested.some((option) => option.value === 'llama3.2:3b')).toBe(true);
+    expect(suggested.some((option) => option.value === 'qwen3:4b')).toBe(true);
     expect(suggested.some((option) => option.value === 'qwen2.5:3b')).toBe(true);
     expect(suggested.some((option) => option.value === 'qwen2.5:7b')).toBe(true);
+    expect(suggested.some((option) => option.value === 'qwen2.5-coder:7b')).toBe(true);
+    expect(suggested.some((option) => option.value === 'deepseek-r1:7b')).toBe(true);
     expect(suggested.some((option) => option.value === 'gemma3:1b')).toBe(true);
     expect(suggested.some((option) => option.value === 'gemma3:4b')).toBe(true);
+    expect(suggested.some((option) => option.value === 'phi4-mini:3.8b')).toBe(true);
+    expect(suggested.some((option) => option.value === 'mistral:7b')).toBe(true);
   });
 });
 
