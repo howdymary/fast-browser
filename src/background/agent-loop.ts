@@ -57,6 +57,7 @@ Rules:
 2. If the page snapshot is sufficient, return done immediately.
 3. Do not propose extra browsing actions for a summary or explanation request.
 4. Output must be a single top-level action object with an "action" field.
+5. The "result" field must be a single string, not an array or nested object.
 `.trim();
 
 export interface AgentLoopDependencies {
@@ -267,6 +268,46 @@ function unwrapActionPayload(parsedValue: unknown): { value: unknown; warning?: 
   return { value: parsedValue };
 }
 
+function normalizeModelText(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((item) => normalizeModelText(item))
+      .filter((item): item is string => Boolean(item));
+
+    if (parts.length === 0) {
+      return null;
+    }
+
+    if (parts.length === 1) {
+      return parts[0];
+    }
+
+    return parts.map((item) => (item.startsWith('- ') ? item : `- ${item}`)).join('\n');
+  }
+
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const preferredKeys = ['result', 'summary', 'answer', 'content', 'text', 'message'];
+    for (const key of preferredKeys) {
+      const normalized = normalizeModelText(record[key]);
+      if (normalized) {
+        return normalized;
+      }
+    }
+  }
+
+  return null;
+}
+
 function parseAgentAction(raw: string): { action: AgentAction; warning?: string } {
   let parsedValue: unknown;
   const candidate = extractJsonCandidate(raw);
@@ -311,13 +352,19 @@ function parseAgentAction(raw: string): { action: AgentAction; warning?: string 
       }
       break;
     case 'ask_human':
-      if (typeof parsed.question === 'string') {
-        return { action: { action: 'ask_human', question: parsed.question, reason: parsed.reason ?? 'Need confirmation' }, warning: unwrapped.warning };
+      {
+        const question = normalizeModelText(parsed.question);
+        if (question) {
+          return { action: { action: 'ask_human', question, reason: parsed.reason ?? 'Need confirmation' }, warning: unwrapped.warning };
+        }
       }
       break;
     case 'done':
-      if (typeof parsed.result === 'string') {
-        return { action: { action: 'done', result: parsed.result, reason: parsed.reason ?? 'Task complete' }, warning: unwrapped.warning };
+      {
+        const result = normalizeModelText(parsed.result);
+        if (result) {
+          return { action: { action: 'done', result, reason: parsed.reason ?? 'Task complete' }, warning: unwrapped.warning };
+        }
       }
       break;
     default:

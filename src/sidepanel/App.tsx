@@ -327,7 +327,7 @@ export function App(): ReactElement {
   const hasValidationErrors = Object.keys(formErrors).length > 0;
   const showSetupCard = showSetup || Boolean(providerValidationError);
   const showSiteAccessBanner = siteAccess.status === 'unsupported'
-    || (siteAccess.status === 'not-granted' && (validationAttempted || Boolean(error)));
+    || siteAccess.status === 'not-granted';
 
   useEffect(() => {
     if (
@@ -800,7 +800,7 @@ export function App(): ReactElement {
                   <div className="font-medium text-white">
                     {siteAccess.status === 'unsupported'
                       ? 'Fast Browser cannot run on this tab'
-                      : 'Fast Browser needs access to this site'}
+                      : 'Allow this site before your first run'}
                   </div>
                   <p className="mt-1 max-w-xl text-sm text-slate-300">{siteAccess.label}</p>
                 </div>
@@ -811,7 +811,7 @@ export function App(): ReactElement {
                     onClick={() => { void handleGrantSiteAccess(); }}
                     disabled={runInFlight || siteAccess.status === 'granted'}
                   >
-                    {siteAccess.status === 'granted' ? 'Allowed' : 'Allow on this site'}
+                    {siteAccess.status === 'granted' ? 'Allowed' : 'Grant site access'}
                   </button>
                 ) : null}
               </div>

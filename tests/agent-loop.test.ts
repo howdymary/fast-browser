@@ -374,6 +374,77 @@ describe('runAgentLoop', () => {
     expect(result.finalMessage).toMatch(/finished/i);
   });
 
+  it('normalizes an array-shaped done result into bullet text', async () => {
+    const page = makePageState({
+      visibleText: 'Hormuz overview',
+      elements: [],
+    });
+
+    const result = await runAgentLoop(
+      {
+        task: 'Summarize this page in 3 bullets.',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi.fn().mockResolvedValue(page),
+        executeAction: vi.fn(),
+        navigate: vi.fn(),
+        callModel: vi.fn().mockResolvedValue(`{"action":"done","result":["The Strait of Hormuz is a narrow waterway connecting the Persian Gulf to the Gulf of Oman.","It is located between Iran and Oman, and is an important shipping route for oil and liquefied natural gas.","The strait is approximately 21 miles (34 km) wide at its narrowest point."],"reason":"Summarized the page"}`),
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.finalMessage).toContain('- The Strait of Hormuz is a narrow waterway connecting the Persian Gulf to the Gulf of Oman.');
+    expect(result.finalMessage).toContain('- It is located between Iran and Oman, and is an important shipping route for oil and liquefied natural gas.');
+  });
+
+  it('normalizes object-shaped done results when the model nests summary text', async () => {
+    const page = makePageState({
+      elements: [],
+    });
+
+    const result = await runAgentLoop(
+      {
+        task: 'Summarize this page in 3 bullets.',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi.fn().mockResolvedValue(page),
+        executeAction: vi.fn(),
+        navigate: vi.fn(),
+        callModel: vi.fn().mockResolvedValue('{"action":"done","result":{"summary":"- Point one\\n- Point two\\n- Point three"},"reason":"Summarized the page"}'),
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.finalMessage).toContain('Point one');
+    expect(result.finalMessage).toContain('Point three');
+  });
+
+  it('normalizes ask_human questions when the model returns a list', async () => {
+    const page = makePageState();
+
+    const result = await runAgentLoop(
+      {
+        task: 'Do something risky',
+        settings: DEFAULT_PROVIDER_SETTINGS,
+      },
+      {
+        signal: new AbortController().signal,
+        getPageState: vi.fn().mockResolvedValue(page),
+        executeAction: vi.fn(),
+        navigate: vi.fn(),
+        callModel: vi.fn().mockResolvedValue('{"action":"ask_human","question":["I found multiple destructive options.","Which one should I use?"],"reason":"Need confirmation"}'),
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.finalMessage).toContain('I found multiple destructive options.');
+    expect(result.finalMessage).toContain('Which one should I use?');
+  });
+
   it('does not retry non-transient model failures', async () => {
     const page = makePageState({
       elements: [],
